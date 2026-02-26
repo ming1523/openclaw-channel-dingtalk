@@ -1,4 +1,7 @@
 import axios from 'axios';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const shared = vi.hoisted(() => ({
@@ -594,5 +597,65 @@ describe('inbound-handler', () => {
             expect.stringContaining('Unhandled stop reason:'),
             expect.anything(),
         );
+    });
+
+    it('injects resolved quoted text into inbound context when originalMsgId can be found in journal', async () => {
+        const runtime = buildRuntime();
+        const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dingtalk-inbound-journal-'));
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(path.join(tmpDir, 'sessions.json'));
+        const formatInboundEnvelopeMock = runtime.channel.reply.formatInboundEnvelope as ReturnType<typeof vi.fn>;
+        const finalizeInboundContextMock = runtime.channel.reply.finalizeInboundContext as ReturnType<typeof vi.fn>;
+
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: 'first message', messageType: 'text' })
+            .mockReturnValueOnce({ text: 'follow-up', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'orig_msg_1',
+                msgtype: 'text',
+                text: { content: 'first message' },
+                conversationType: '1',
+                conversationId: 'cid_quote',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now() - 1000,
+            },
+        } as any);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'reply_msg_2',
+                msgtype: 'text',
+                text: { content: 'follow-up', isReplyMsg: true },
+                originalMsgId: 'orig_msg_1',
+                conversationType: '1',
+                conversationId: 'cid_quote',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        const secondBodyArg = formatInboundEnvelopeMock.mock.calls[1]?.[0]?.body;
+        const secondFinalizeArg = finalizeInboundContextMock.mock.calls[1]?.[0];
+        expect(String(secondBodyArg)).toContain('[引用消息: "first message"]');
+        expect(String(secondFinalizeArg?.RawBody)).toContain('[引用消息: "first message"]');
+        expect(String(secondFinalizeArg?.CommandBody)).toContain('[引用消息: "first message"]');
+
+        await fs.rm(tmpDir, { recursive: true, force: true });
     });
 });

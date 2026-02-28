@@ -54,6 +54,8 @@ export interface DingTalkConfig extends OpenClawConfig {
   reconnectJitter?: number;
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles?: number;
+  /** Whether to enable underlying stream keepAlive heartbeat (default: false for stability) */
+  keepAlive?: boolean;
   proactivePermissionHint?: {
     enabled?: boolean;
     cooldownHours?: number;
@@ -87,6 +89,8 @@ export interface DingTalkChannelConfig {
   reconnectJitter?: number;
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles?: number;
+  /** Whether to enable underlying stream keepAlive heartbeat (default: false for stability) */
+  keepAlive?: boolean;
   proactivePermissionHint?: {
     enabled?: boolean;
     cooldownHours?: number;
@@ -567,6 +571,7 @@ export function resolveDingTalkAccount(
       maxReconnectDelay: dingtalk?.maxReconnectDelay,
       reconnectJitter: dingtalk?.reconnectJitter,
       maxReconnectCycles: dingtalk?.maxReconnectCycles,
+      keepAlive: dingtalk?.keepAlive,
       proactivePermissionHint: dingtalk?.proactivePermissionHint,
     };
     return {

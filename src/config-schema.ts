@@ -79,6 +79,9 @@ const DingTalkAccountConfigSchema = z.object({
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles: z.number().int().min(1).optional().default(10),
 
+  /** Whether to enable underlying stream keepAlive heartbeat (default: false for stability) */
+  keepAlive: z.boolean().optional().default(false),
+
   proactivePermissionHint: z
     .object({
       enabled: z.boolean().optional().default(true),

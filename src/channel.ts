@@ -292,7 +292,8 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         clientId: config.clientId,
         clientSecret: config.clientSecret,
         debug: config.debug || false,
-        keepAlive: false,
+        // keepAlive can be noisy/unstable in some network/proxy environments.
+        keepAlive: config.keepAlive ?? false,
       });
 
       // Disable built-in reconnect so ConnectionManager owns all retry/backoff behavior.

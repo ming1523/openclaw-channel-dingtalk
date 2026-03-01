@@ -618,6 +618,7 @@ export async function uploadMedia(
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
+      ...(config.bypassProxyForSend ? { proxy: false } : {}),
     });
 
     if (response.data?.errcode === 0 && response.data?.media_id) {

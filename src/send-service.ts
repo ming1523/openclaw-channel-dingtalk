@@ -50,6 +50,19 @@ function composeCardContentForAppend(previous: string | undefined, incoming: str
   return `${prev}${incoming}`;
 }
 
+function getProxyBypassOption(config: DingTalkConfig): { proxy: false } | Record<string, never> {
+  return config.bypassProxyForSend ? { proxy: false } : {};
+}
+
+function extractOutboundMessageId(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const data = payload as Record<string, unknown>;
+  const value = data.processQueryKey ?? data.messageId ?? data.msgid;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function extractErrorCodeFromResponseData(data: unknown): string | null {
   if (!data || typeof data !== "object") {
     return null;
@@ -163,6 +176,7 @@ export async function sendProactiveTextOrMarkdown(
       method: "POST",
       data: payload,
       headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+      ...getProxyBypassOption(config),
     });
     if (options.accountId) {
       deleteProactiveRiskObservation(options.accountId, resolvedTarget);
@@ -273,6 +287,7 @@ export async function sendProactiveMedia(
       method: "POST",
       data: payload,
       headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+      ...getProxyBypassOption(config),
     });
     if (options.accountId) {
       deleteProactiveRiskObservation(options.accountId, resolvedTarget);
@@ -342,6 +357,7 @@ export async function sendBySession(
           method: "POST",
           data: body,
           headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+          ...getProxyBypassOption(config),
         });
         return result.data;
       }
@@ -373,6 +389,7 @@ export async function sendBySession(
     method: "POST",
     data: body,
     headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+    ...getProxyBypassOption(config),
   });
   return result.data;
 }

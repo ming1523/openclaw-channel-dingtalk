@@ -352,6 +352,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         content = {
           ...content,
           text: `[引用消息: "${quotedText}"]\n\n${content.text}`,
+          mediaPath: content.mediaPath || quoted.mediaPath,
+          mediaType: content.mediaType || quoted.mediaType,
         };
       } else {
         // Silent degrade: keep handling user message without proactive warning spam.
@@ -364,6 +366,20 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 
+  const looksLikeQuotedImageOnly =
+    !content.mediaPath &&
+    content.text.includes("[引用消息:") &&
+    (content.text.includes("[图片]") || /引用消息[:：]\s*"?.*图片/.test(content.text));
+
+  if (looksLikeQuotedImageOnly) {
+    const quoteImageHint =
+      "\n\n[系统提示] 当前消息仅包含“引用图片”的文本线索，未携带图片文件本体；你无法看到图像内容。请先明确告知用户需要补发原图，再进行分析。";
+    content = {
+      ...content,
+      text: `${content.text}${quoteImageHint}`,
+    };
+  }
+
   try {
     await appendQuoteJournalEntry({
       storePath,
@@ -372,6 +388,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       msgId: data.msgId,
       messageType: extractedContent.messageType,
       text: extractedContent.text,
+      mediaPath: extractedContent.mediaPath,
+      mediaType: extractedContent.mediaType,
       createdAt: data.createAt,
     });
   } catch (err) {

@@ -11,6 +11,8 @@ export interface QuoteJournalEntry {
     msgId: string;
     messageType: string;
     text: string;
+    mediaPath?: string;
+    mediaType?: string;
 }
 
 export interface AppendQuoteJournalEntryParams {
@@ -20,6 +22,8 @@ export interface AppendQuoteJournalEntryParams {
     msgId: string;
     messageType: string;
     text: string;
+    mediaPath?: string;
+    mediaType?: string;
     createdAt?: number;
     ttlDays?: number;
     nowMs?: number;
@@ -108,6 +112,12 @@ function safeParseLine(line: string): QuoteJournalEntry | null {
         ) {
             return null;
         }
+        if (parsed.mediaPath !== undefined && typeof parsed.mediaPath !== "string") {
+            return null;
+        }
+        if (parsed.mediaType !== undefined && typeof parsed.mediaType !== "string") {
+            return null;
+        }
         return parsed as QuoteJournalEntry;
     } catch {
         return null;
@@ -127,6 +137,8 @@ export async function appendQuoteJournalEntry(params: AppendQuoteJournalEntryPar
         msgId: params.msgId,
         messageType: params.messageType,
         text: params.text,
+        mediaPath: params.mediaPath,
+        mediaType: params.mediaType,
     };
     await fs.appendFile(filePath, `${JSON.stringify(entry)}\n`, "utf8");
 

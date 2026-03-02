@@ -3,7 +3,7 @@ import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from "dingtalk-stream";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
 import { getAccessToken } from "./auth";
-import { createAICard, streamAICard, finishAICard } from "./card-service";
+import { createAICard, streamAICard, finishAICard, renderCardFeedbackState } from "./card-service";
 import { getConfig, isConfigured, resolveRelativePath, stripTargetPrefix } from "./config";
 import { DingTalkConfigSchema } from "./config-schema.js";
 import { ConnectionManager } from "./connection-manager";
@@ -16,7 +16,6 @@ import {
   detectMediaTypeFromExtension,
   sendMessage,
   sendProactiveMedia,
-  sendProactiveTextOrMarkdown,
   sendBySession,
   uploadMedia,
 } from "./send-service";
@@ -46,6 +45,7 @@ const inboundCountersByAccount = new Map<
   }
 >();
 const INBOUND_COUNTER_LOG_EVERY = 10;
+const sessionWebhookBySpaceId = new Map<string, string>();
 
 function getInboundCounters(accountId: string) {
   const existing = inboundCountersByAccount.get(accountId);
@@ -391,6 +391,10 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         try {
           const data = JSON.parse(res.data) as DingTalkInboundMessage;
 
+          if (typeof data.conversationId === "string" && typeof data.sessionWebhook === "string") {
+            sessionWebhookBySpaceId.set(data.conversationId, data.sessionWebhook);
+          }
+
           // Message deduplication key is bot-scoped to avoid cross-account conflicts.
           const robotKey = config.robotCode || config.clientId || account.accountId;
           const msgId = data.msgId || messageId;
@@ -494,36 +498,39 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
           if (actionId === "feedback_up" || actionId === "feedback_down") {
             const spaceType = typeof data?.spaceType === "string" ? data.spaceType : "";
             const spaceId = typeof data?.spaceId === "string" ? data.spaceId : undefined;
-            const userId = typeof data?.userId === "string" ? data.userId : undefined;
-            // Prefer conversation space (group/thread) to avoid OTO permission limits.
-            const target = spaceId || userId;
+            const outTrackId = typeof data?.outTrackId === "string" ? data.outTrackId : undefined;
 
             ctx.log?.info?.(
-              `[${account.accountId}] [DingTalk][CardCallback] feedback branch entered: actionId=${actionId}, spaceType=${spaceType}, spaceId=${spaceId || ""}, userId=${userId || ""}`,
+              `[${account.accountId}] [DingTalk][CardCallback] feedback branch entered: actionId=${actionId}, spaceType=${spaceType}, spaceId=${spaceId || ""}, outTrackId=${outTrackId || ""}`,
             );
 
-            // Strategy #2: always send a follow-up status message via proactive API.
-            if (target) {
-              const text =
-                actionId === "feedback_up"
-                  ? "✅ 已收到你的点赞（反馈已记录）"
-                  : "⚠️ 已收到你的点踩（反馈已记录，我会改进）";
+            if (outTrackId) {
+              await renderCardFeedbackState(outTrackId, actionId, ctx.log);
+            }
+
+            const text =
+              actionId === "feedback_up"
+                ? "✅ 已收到你的点赞（反馈已记录）"
+                : "⚠️ 已收到你的点踩（反馈已记录，我会改进）";
+
+            const sessionWebhook = spaceId ? sessionWebhookBySpaceId.get(spaceId) : undefined;
+            if (sessionWebhook) {
               try {
-                await sendProactiveTextOrMarkdown(config, target, text, {
+                await sendBySession(config, sessionWebhook, text, {
                   accountId: account.accountId,
                   log: ctx.log,
                 });
                 ctx.log?.info?.(
-                  `[${account.accountId}] [DingTalk][CardCallback] feedback ack sent successfully to target=${target}`,
+                  `[${account.accountId}] [DingTalk][CardCallback] feedback ack sent via session webhook`,
                 );
               } catch (sendErr: any) {
                 ctx.log?.warn?.(
-                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendErr?.message || String(sendErr)}`,
+                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack via session webhook: ${sendErr?.message || String(sendErr)}`,
                 );
               }
             } else {
               ctx.log?.warn?.(
-                `[${account.accountId}] [DingTalk][CardCallback] Missing callback target: spaceType=${spaceType}, spaceId=${spaceId || ""}, userId=${userId || ""}`,
+                `[${account.accountId}] [DingTalk][CardCallback] Missing session webhook for spaceId=${spaceId || ""}`,
               );
             }
           }

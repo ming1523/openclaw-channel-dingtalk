@@ -16,6 +16,7 @@ import {
   detectMediaTypeFromExtension,
   sendMessage,
   sendProactiveMedia,
+  sendProactiveTextOrMarkdown,
   sendBySession,
   uploadMedia,
 } from "./send-service";
@@ -491,23 +492,38 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
           );
 
           if (actionId === "feedback_up" || actionId === "feedback_down") {
+            const spaceType = typeof data?.spaceType === "string" ? data.spaceType : "";
             const spaceId = typeof data?.spaceId === "string" ? data.spaceId : undefined;
+            const userId = typeof data?.userId === "string" ? data.userId : undefined;
+            const target = spaceType.toLowerCase() === "im" ? userId : spaceId;
 
-            // Strategy #2: always send a follow-up status card/message.
-            if (spaceId) {
+            ctx.log?.info?.(
+              `[${account.accountId}] [DingTalk][CardCallback] feedback branch entered: actionId=${actionId}, spaceType=${spaceType}, spaceId=${spaceId || ""}, userId=${userId || ""}`,
+            );
+
+            // Strategy #2: always send a follow-up status message via proactive API.
+            if (target) {
               const text =
                 actionId === "feedback_up"
                   ? "✅ 已收到你的点赞（反馈已记录）"
                   : "⚠️ 已收到你的点踩（反馈已记录，我会改进）";
-              const sendResult = await sendMessage(config, spaceId, text, {
-                accountId: account.accountId,
-                log: ctx.log,
-              });
-              if (!sendResult.ok) {
+              try {
+                await sendProactiveTextOrMarkdown(config, target, text, {
+                  accountId: account.accountId,
+                  log: ctx.log,
+                });
+                ctx.log?.info?.(
+                  `[${account.accountId}] [DingTalk][CardCallback] feedback ack sent successfully to target=${target}`,
+                );
+              } catch (sendErr: any) {
                 ctx.log?.warn?.(
-                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendResult.error}`,
+                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendErr?.message || String(sendErr)}`,
                 );
               }
+            } else {
+              ctx.log?.warn?.(
+                `[${account.accountId}] [DingTalk][CardCallback] Missing callback target: spaceType=${spaceType}, spaceId=${spaceId || ""}, userId=${userId || ""}`,
+              );
             }
           }
 

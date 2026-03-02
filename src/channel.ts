@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
+import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from "dingtalk-stream";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
 import { getAccessToken } from "./auth";
@@ -69,6 +69,37 @@ function logInboundCounters(log: any, accountId: string, reason: string): void {
   log?.info?.(
     `[${accountId}] Inbound counters (${reason}): received=${stats.received}, acked=${stats.acked}, processed=${stats.processed}, dedupSkipped=${stats.dedupSkipped}, inflightSkipped=${stats.inflightSkipped}, failed=${stats.failed}, noMessageId=${stats.noMessageId}`,
   );
+}
+
+function extractCardActionSummary(data: any): string {
+  const candidates = [
+    data?.action,
+    data?.actionType,
+    data?.actionValue,
+    data?.value,
+    data?.eventType,
+    data?.operate,
+    data?.callbackType,
+    data?.cardPrivateData,
+    data?.privateData,
+  ].filter((v) => v !== undefined && v !== null);
+
+  if (candidates.length === 0) {
+    return "(no action field found)";
+  }
+
+  const printable = candidates
+    .map((v) => {
+      if (typeof v === "string") return v;
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return String(v);
+      }
+    })
+    .join(" | ");
+
+  return printable;
 }
 
 // DingTalk Channel Definition (assembly layer).
@@ -397,6 +428,36 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
           stats.failed += 1;
           logInboundCounters(ctx.log, account.accountId, "failed");
           ctx.log?.error?.(`[${account.accountId}] Error processing message: ${error.message}`);
+        }
+      });
+
+      client.registerCallbackListener(TOPIC_CARD, async (res: any) => {
+        const messageId = res.headers?.messageId;
+        const acknowledge = () => {
+          if (!messageId) {
+            return;
+          }
+          try {
+            client.socketCallBackResponse(messageId, { success: true });
+          } catch (ackError: any) {
+            ctx.log?.warn?.(
+              `[${account.accountId}] Failed to acknowledge card callback ${messageId}: ${ackError.message}`,
+            );
+          }
+        };
+
+        try {
+          const data = JSON.parse(res.data);
+          const summary = extractCardActionSummary(data);
+          ctx.log?.info?.(
+            `[${account.accountId}] [DingTalk][CardCallback] action=${summary} raw=${JSON.stringify(data)}`,
+          );
+          acknowledge();
+        } catch (error: any) {
+          ctx.log?.error?.(
+            `[${account.accountId}] [DingTalk][CardCallback] Failed to parse callback: ${error.message}`,
+          );
+          acknowledge();
         }
       });
 

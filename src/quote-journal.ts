@@ -73,6 +73,25 @@ function isEntryWithinTtl(entryTs: number, nowMs: number, ttlDays: number): bool
     return nowMs - entryTs <= ttlDays * MS_PER_DAY;
 }
 
+function normalizeMsgId(value: string): string {
+    let next = value.trim();
+    if (!next) return "";
+    if (
+        (next.startsWith('"') && next.endsWith('"')) ||
+        (next.startsWith("'") && next.endsWith("'"))
+    ) {
+        next = next.slice(1, -1);
+    }
+    try {
+        next = decodeURIComponent(next);
+    } catch {
+        // ignore malformed percent-encoding
+    }
+    // Some transports decode '+' into space; convert back for msgId matching.
+    next = next.replace(/ /g, "+");
+    return next;
+}
+
 function safeParseLine(line: string): QuoteJournalEntry | null {
     if (!line.trim()) {
         return null;
@@ -96,7 +115,7 @@ function safeParseLine(line: string): QuoteJournalEntry | null {
 }
 
 export async function appendQuoteJournalEntry(params: AppendQuoteJournalEntryParams): Promise<void> {
-    if (!params.msgId || !params.text.trim()) {
+    if (!params.msgId) {
         return;
     }
     const filePath = resolveQuoteJournalFile(params);
@@ -200,6 +219,10 @@ export async function resolveQuotedMessageById(
     if (!params.originalMsgId) {
         return null;
     }
+    const targetMsgId = normalizeMsgId(params.originalMsgId);
+    if (!targetMsgId) {
+        return null;
+    }
 
     const filePath = resolveQuoteJournalFile(params);
     const nowMs = params.nowMs ?? Date.now();
@@ -224,7 +247,7 @@ export async function resolveQuotedMessageById(
         if (!isEntryWithinTtl(entry.ts, nowMs, ttlDays)) {
             continue;
         }
-        if (entry.msgId === params.originalMsgId) {
+        if (normalizeMsgId(entry.msgId) === targetMsgId) {
             return entry;
         }
     }

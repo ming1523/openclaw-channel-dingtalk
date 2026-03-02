@@ -347,37 +347,17 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         conversationId: groupId,
         originalMsgId: data.originalMsgId,
       });
-      if (quoted?.text?.trim()) {
+      if (quoted) {
+        const quotedText = quoted.text?.trim() || `[${quoted.messageType || "消息"}]`;
         content = {
           ...content,
-          text: `[引用消息: "${quoted.text.trim()}"]\n\n${content.text}`,
+          text: `[引用消息: "${quotedText}"]\n\n${content.text}`,
         };
       } else {
-        log?.error?.(
-          `[DingTalk] Failed to resolve quoted originalMsgId=${data.originalMsgId} conversationId=${groupId}`,
+        // Silent degrade: keep handling user message without proactive warning spam.
+        log?.warn?.(
+          `[DingTalk] Quote unresolved, fallback to plain inbound: originalMsgId=${data.originalMsgId} conversationId=${groupId}`,
         );
-        try {
-          const notifyTarget = isDirect ? senderId : groupId;
-          const notifyResult = await sendMessage(
-            dingtalkConfig,
-            notifyTarget,
-            `⚠️ 引用消息ID无法获取\n\n未能根据消息ID \`${data.originalMsgId}\` 找到可引用原文，可能已过期或不在当前会话上下文中。`,
-            {
-              accountId,
-              atUserId: !isDirect ? senderId : null,
-              log,
-            },
-          );
-          if (!notifyResult.ok) {
-            log?.error?.(
-              `[DingTalk] Failed to notify unresolved quoted originalMsgId=${data.originalMsgId}: ${notifyResult.error || "unknown"}`,
-            );
-          }
-        } catch (notifyErr) {
-          log?.error?.(
-            `[DingTalk] Failed to send unresolved quote notice originalMsgId=${data.originalMsgId}: ${String(notifyErr)}`,
-          );
-        }
       }
     } catch (err) {
       log?.debug?.(`[DingTalk] Quote journal lookup failed: ${String(err)}`);

@@ -3,7 +3,7 @@ import { DWClient, TOPIC_CARD, TOPIC_ROBOT } from "dingtalk-stream";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
 import { getAccessToken } from "./auth";
-import { createAICard, streamAICard, finishAICard, renderCardFeedbackState } from "./card-service";
+import { createAICard, streamAICard, finishAICard } from "./card-service";
 import { getConfig, isConfigured, resolveRelativePath, stripTargetPrefix } from "./config";
 import { DingTalkConfigSchema } from "./config-schema.js";
 import { ConnectionManager } from "./connection-manager";
@@ -491,19 +491,14 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
           );
 
           if (actionId === "feedback_up" || actionId === "feedback_down") {
-            const outTrackId = typeof data?.outTrackId === "string" ? data.outTrackId : undefined;
             const spaceId = typeof data?.spaceId === "string" ? data.spaceId : undefined;
 
-            let rendered = false;
-            if (outTrackId) {
-              rendered = await renderCardFeedbackState(outTrackId, actionId, ctx.log);
-            }
-
-            if (!rendered && spaceId) {
+            // Strategy #2: always send a follow-up status card/message.
+            if (spaceId) {
               const text =
                 actionId === "feedback_up"
-                  ? "收到 👍 反馈，感谢支持！"
-                  : "收到 👎 反馈，我会继续改进。";
+                  ? "✅ 已收到你的点赞（反馈已记录）"
+                  : "⚠️ 已收到你的点踩（反馈已记录，我会改进）";
               const sendResult = await sendMessage(config, spaceId, text, {
                 accountId: account.accountId,
                 log: ctx.log,

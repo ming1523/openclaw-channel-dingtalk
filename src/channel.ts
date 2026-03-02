@@ -102,6 +102,42 @@ function extractCardActionSummary(data: any): string {
   return printable;
 }
 
+function extractCardActionId(data: any): string | undefined {
+  const parsedValue = (() => {
+    if (typeof data?.value !== "string") {
+      return data?.value;
+    }
+    try {
+      return JSON.parse(data.value);
+    } catch {
+      return data.value;
+    }
+  })();
+
+  let parsedContent: any;
+  if (typeof data?.content === "string") {
+    try {
+      parsedContent = JSON.parse(data.content);
+    } catch {
+      parsedContent = data.content;
+    }
+  }
+
+  const sources = [data, parsedValue, parsedContent].filter(Boolean);
+
+  for (const src of sources) {
+    const actionIds = src?.cardPrivateData?.actionIds;
+    if (Array.isArray(actionIds) && actionIds.length > 0 && typeof actionIds[0] === "string") {
+      return actionIds[0];
+    }
+    if (typeof src?.actionValue === "string") return src.actionValue;
+    if (typeof src?.eventKey === "string") return src.eventKey;
+    if (typeof src?.value === "string" && src.value.trim()) return src.value;
+  }
+
+  return undefined;
+}
+
 // DingTalk Channel Definition (assembly layer).
 // Heavy logic is delegated to service modules for maintainability.
 export const dingtalkPlugin: DingTalkChannelPlugin = {
@@ -449,9 +485,30 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         try {
           const data = JSON.parse(res.data);
           const summary = extractCardActionSummary(data);
+          const actionId = extractCardActionId(data);
           ctx.log?.info?.(
             `[${account.accountId}] [DingTalk][CardCallback] action=${summary} raw=${JSON.stringify(data)}`,
           );
+
+          if (actionId === "feedback_up" || actionId === "feedback_down") {
+            const spaceId = typeof data?.spaceId === "string" ? data.spaceId : undefined;
+            if (spaceId) {
+              const text =
+                actionId === "feedback_up"
+                  ? "收到 👍 反馈，感谢支持！"
+                  : "收到 👎 反馈，我会继续改进。";
+              const sendResult = await sendMessage(config, spaceId, text, {
+                accountId: account.accountId,
+                log: ctx.log,
+              });
+              if (!sendResult.ok) {
+                ctx.log?.warn?.(
+                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendResult.error}`,
+                );
+              }
+            }
+          }
+
           acknowledge();
         } catch (error: any) {
           ctx.log?.error?.(

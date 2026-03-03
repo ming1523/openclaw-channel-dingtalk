@@ -703,7 +703,7 @@ describe('inbound-handler', () => {
         await fs.rm(tmpDir, { recursive: true, force: true });
     });
 
-    it('notifies user and logs error when originalMsgId cannot be resolved', async () => {
+    it('logs warning and silently degrades when originalMsgId cannot be resolved', async () => {
         const runtime = buildRuntime();
         const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dingtalk-inbound-journal-miss-'));
         runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(path.join(tmpDir, 'sessions.json'));
@@ -735,8 +735,8 @@ describe('inbound-handler', () => {
         const noticeCalls = shared.sendMessageMock.mock.calls.filter((call) =>
             String(call[2]).includes('引用消息ID')
         );
-        expect(noticeCalls.length).toBe(1);
-        expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve quoted originalMsgId'));
+        expect(noticeCalls.length).toBe(0);
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Quote unresolved, fallback to plain inbound'));
 
         await fs.rm(tmpDir, { recursive: true, force: true });
     });

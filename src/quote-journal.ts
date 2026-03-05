@@ -315,7 +315,7 @@ export async function resolveQuotedMessageWithBacktrack(
     }
 
     const hasReadableMedia = (entry: QuoteJournalEntry): boolean =>
-        Boolean(entry.mediaPath) || /\[(图片|image)\]/i.test(entry.text);
+        Boolean(entry.mediaPath);
 
     const exactIndex = lastIndexByMsgId.get(targetMsgId);
     if (typeof exactIndex === "number") {

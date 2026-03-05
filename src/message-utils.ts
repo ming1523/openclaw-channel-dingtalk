@@ -289,7 +289,6 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       quoted: quoted ?? undefined,
     };
   }
-
   if (msgtype === "chatRecord") {
     const summary = String((data.content as any)?.summary || "").trim();
     const rawRecord = (data.content as any)?.chatRecord;

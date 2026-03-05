@@ -407,11 +407,28 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
-  if (content.mediaPath && dingtalkConfig.robotCode) {
-    const media = await downloadMedia(dingtalkConfig, content.mediaPath, log);
-    if (media) {
-      mediaPath = media.path;
-      mediaType = media.mimeType;
+  const mediaPaths: string[] = [];
+  const mediaCodes = [
+    ...(Array.isArray(content.mediaPaths) ? content.mediaPaths : []),
+    ...(content.mediaPath ? [content.mediaPath] : []),
+  ].filter(Boolean) as string[];
+
+  if (mediaCodes.length > 0 && dingtalkConfig.robotCode) {
+    for (const code of [...new Set(mediaCodes)]) {
+      const media = await downloadMedia(dingtalkConfig, code, log);
+      if (media) {
+        mediaPaths.push(media.path);
+        if (!mediaPath) {
+          mediaPath = media.path;
+          mediaType = media.mimeType;
+        }
+      }
+    }
+    if (mediaPaths.length > 1) {
+      content = {
+        ...content,
+        text: `${content.text}\n\n[系统提示] 本条消息共解析到 ${mediaPaths.length} 个媒体附件，请逐个查看后回答。`,
+      };
     }
   }
 
@@ -419,11 +436,13 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     content.text.includes("[引用消息:") &&
     /图|图片|看下|感想/.test(content.text) &&
     !content.mediaPath &&
-    !mediaPath;
+    !(Array.isArray(content.mediaPaths) && content.mediaPaths.length > 0) &&
+    !mediaPath &&
+    mediaPaths.length === 0;
   if (quoteWithoutImage) {
     content = {
       ...content,
-      text: `${content.text}\n\n[系统提示] 当前仅拿到引用文本，未拿到图片文件本体。禁止臆测图片内容，请先请用户补发原图后再分析。`,
+      text: `${content.text}\n\n[系统提示] 当前仅拿到引用文本，未拿到图片文件本体。禁止臆测图片内容，请先请用户补发原图后再分析。可直接回复：请把原图再发一遍（不要仅引用）。`,
     };
   }
 
@@ -500,6 +519,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     MessageSid: data.msgId,
     Timestamp: data.createAt,
     MediaPath: mediaPath,
+    MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
     MediaType: mediaType,
     MediaUrl: mediaPath,
     GroupMembers: groupMembers,

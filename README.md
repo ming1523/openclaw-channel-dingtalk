@@ -408,6 +408,16 @@ openclaw gateway restart
 
 owner 权限只控制学习/共享知识命令，不改变现有 `dmPolicy / groupPolicy / allowFrom / pairing` 的普通消息使用路径。
 
+### owner 学习/控制命令
+
+- `/learn global <规则>`：发布一条 account 级全局知识
+- `全局注入：<规则>` / `注入全局：<规则>` / `全局知识：<规则>`：`/learn global` 的中文别名
+- `/learn session <规则>`：仅发布到当前会话
+- `当前会话注入：<规则>`：`/learn session` 的中文别名
+- `/learn list`：查看当前已启用的全局知识
+
+这些命令默认只允许 owner 在私聊里执行；非 owner 发送时会直接收到拒绝提示，不会进入普通模型对话链路。
+
 ## 安全策略
 
 ### 私聊策略 (dmPolicy)

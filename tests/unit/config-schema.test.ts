@@ -66,11 +66,6 @@ describe('DingTalkConfigSchema', () => {
         }) as { accounts: Record<string, { keepAlive?: boolean }> };
 
         expect(parsed.accounts.main?.keepAlive).toBeUndefined();
-                },
-            },
-        }) as { accounts: Record<string, { keepAlive?: boolean }> };
-
-        expect(parsed.accounts.main?.keepAlive).toBeUndefined();
     });
 
     it('accepts custom aicardDegradeMs for account config', () => {

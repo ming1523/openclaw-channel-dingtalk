@@ -349,6 +349,7 @@ async function sendTemplateMismatchNotification(
       method: "POST",
       data: payload,
       headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+      ...getProxyBypassOption(config),
     });
   } catch (sendErr: any) {
     log?.warn?.(`[DingTalk][AICard] Failed to send error notification to user: ${sendErr.message}`);
@@ -527,6 +528,7 @@ export async function createAICard(
       createAndDeliverBody,
       {
         headers: { "x-acs-dingtalk-access-token": token, "Content-Type": "application/json" },
+        ...getProxyBypassOption(config),
       },
     );
     log?.debug?.(
@@ -618,6 +620,7 @@ export async function streamAICard(
         "x-acs-dingtalk-access-token": card.accessToken,
         "Content-Type": "application/json",
       },
+      ...(card.config ? getProxyBypassOption(card.config) : {}),
     });
     log?.debug?.(
       `[DingTalk][AICard] Streaming response: status=${streamResp.status}, data=${JSON.stringify(streamResp.data)}`,
@@ -667,6 +670,7 @@ export async function streamAICard(
             "x-acs-dingtalk-access-token": card.accessToken,
             "Content-Type": "application/json",
           },
+          ...(card.config ? getProxyBypassOption(card.config) : {}),
         });
         log?.debug?.(
           `[DingTalk][AICard] Retry after token refresh succeeded: status=${retryResp.status}`,

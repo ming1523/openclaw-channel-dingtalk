@@ -391,6 +391,32 @@ describe('inbound-handler', () => {
         expect(shared.sendMessageMock).not.toHaveBeenCalled();
     });
 
+    it('handleDingTalkMessage accepts natural global injection alias for owner', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '全局注入：当用户问“Q”时，必须回答“A”', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
+            data: {
+                msgId: 'm2_owner_apply_global_alias',
+                msgtype: 'text',
+                text: { content: '全局注入：当用户问“Q”时，必须回答“A”' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已注入全局知识');
+    });
+
     it('handleDingTalkMessage sends group deny message when groupPolicy allowlist blocks group', async () => {
         await handleDingTalkMessage({
             cfg: {},

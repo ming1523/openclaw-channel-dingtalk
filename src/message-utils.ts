@@ -180,7 +180,11 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       if (content?.richText && Array.isArray(content.richText)) {
         const richTextQuote = extractRichTextQuoteParts(content.richText);
         if (richTextQuote?.summary) {
-          return { prefix: `[引用消息: "${richTextQuote.summary}"]\n\n` };
+          return {
+            prefix: `[引用消息: "${richTextQuote.summary}"]\n\n`,
+            mediaDownloadCode: richTextQuote.pictureDownloadCode,
+            mediaType: richTextQuote.pictureDownloadCode ? "image" : undefined,
+          };
         }
       }
     }

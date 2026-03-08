@@ -260,7 +260,7 @@ describe('message-utils', () => {
                         richText: [
                             { msgType: 'text', content: '你好' },
                             { msgType: 'emoji', content: '😀' },
-                            { type: 'picture' },
+                            { type: 'picture', downloadCode: 'dl_pic_legacy_1' },
                             { msgType: 'at', atName: 'Tom' },
                         ],
                     },
@@ -273,6 +273,8 @@ describe('message-utils', () => {
         expect(content.quoted?.prefix).toContain('你好');
         expect(content.quoted?.prefix).toContain('😀');
         expect(content.quoted?.prefix).toContain('@Tom');
+        expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_legacy_1');
+        expect(content.quoted?.mediaType).toBe('image');
     });
 
     it('仅 originalMsgId（无 repliedMsg）— prefix contains originalMsgId', () => {

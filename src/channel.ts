@@ -30,6 +30,7 @@ import { prepareMediaInput, resolveOutboundMediaType } from "./media-utils";
 import { dingtalkOnboardingAdapter } from "./onboarding.js";
 import { resolveOriginalPeerId } from "./peer-id-registry";
 import { getDingTalkRuntime } from "./runtime";
+import { isFeedbackLearningEnabled, recordExplicitFeedbackLearning } from "./feedback-learning-service";
 import {
   sendMessage,
   sendProactiveMedia,
@@ -700,6 +701,16 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
           );
 
           if (analysis.feedbackTarget && analysis.feedbackAckText) {
+            recordExplicitFeedbackLearning({
+              enabled: isFeedbackLearningEnabled(config),
+              storePath: accountStorePath,
+              accountId: account.accountId,
+              targetId: analysis.feedbackTarget,
+              feedbackType: analysis.actionId === "feedback_up" ? "feedback_up" : "feedback_down",
+              userId: analysis.userId,
+              processQueryKey: analysis.processQueryKey,
+              noteTtlMs: config.feedbackLearningNoteTtlMs,
+            });
             try {
               await sendProactiveTextOrMarkdown(
                 config,

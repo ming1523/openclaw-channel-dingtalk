@@ -367,6 +367,8 @@ openclaw gateway restart
 | `maxReconnectDelay`     | number   | `60000`      | 最大重连延迟（毫秒）                        |
 | `reconnectJitter`       | number   | `0.3`        | 重连延迟抖动因子（0-1）                     |
 | `bypassProxyForSend`    | boolean  | `false`      | 仅对 send/card/upload 出站请求绕过系统 HTTP(S) 代理 |
+| `feedbackLearningEnabled` | boolean | `false`    | 启用本地反馈学习闭环（事件、反思、会话笔记、全局规则） |
+| `feedbackLearningNoteTtlMs` | number | `21600000` | 会话级学习笔记有效期（毫秒，默认 6 小时） |
 
 ### 连接鲁棒性配置
 
@@ -377,12 +379,69 @@ openclaw gateway restart
 - **maxReconnectDelay**: 重连延迟的上限（毫秒），防止等待时间过长。
 - **reconnectJitter**: 延迟抖动因子，在延迟基础上增加随机变化（±30%），避免多个客户端同时重连。
 - **bypassProxyForSend**: 仅作用于发送链路（session send / proactive send / AI card / media upload），不影响如 `getAccessToken` 之类的其他出站请求。
+- **feedbackLearningEnabled**: 开启后，插件会记录发送快照、显式点赞/点踩、隐式不满信号、反思记录，并在下一条消息进入时把学习提示注入当前上下文。
+- **feedbackLearningNoteTtlMs**: 控制 target 级学习笔记有效期；全局规则仍按 account 级持久化，供同一钉钉账号下的所有会话共享。
 
 重连延迟计算公式：`delay = min(initialDelay × 2^attempt, maxDelay) × (1 ± jitter)`
 
 示例延迟序列（默认配置）：~1s, ~2s, ~4s, ~8s, ~16s, ~32s, ~60s（达到上限）
 
 更多详情请参阅 [CONNECTION_ROBUSTNESS.md](./CONNECTION_ROBUSTNESS.md)。
+
+## 反馈学习与共享知识
+
+插件支持一个本地反馈学习闭环，目标是把“点踩/纠错/后续抱怨”沉淀成可审计的会话笔记和 account 级共享规则，而不是直接修改模型或把原始聊天提交到仓库。
+
+### 设计分层
+
+- **发送快照**：保存最近的问答对，供反馈回溯。
+- **显式反馈**：AI 卡片上的 `feedback_up` / `feedback_down`。
+- **隐式不满**：例如“不是这个意思”“别猜引用原文”“你没看图”等后续纠错消息。
+- **会话笔记**：只作用于当前 target，会在下一条消息组装上下文时生效。
+- **全局规则**：按 account 维度共享；一处沉淀后，同一钉钉账号下的其他会话会在下一次收到消息时自动加载。
+
+### 持久化位置
+
+所有运行时数据都写在 `storePath` 同级目录下的 `dingtalk-state/`，不会散落到其他目录，也不应提交到 GitHub。主要命名空间包括：
+
+- `feedback.events`
+- `feedback.snapshots`
+- `feedback.reflections`
+- `feedback.session-notes`
+- `feedback.learned-rules`
+
+### 调试看板
+
+仓库自带一个本地调试工具，可直接查看：
+
+- 当时的回复内容
+- 用户反馈/隐式不满信号
+- 系统自动反思结果
+- 当前会话笔记
+- 跨所有钉钉会话共享的全局规则
+
+并支持你手工修正诊断与指令，再一键提升为全局规则。
+
+启动方式：
+
+```bash
+node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json --accountId main --port 18895
+```
+
+打开 `http://127.0.0.1:18895` 即可。
+
+### 推荐配置
+
+```json
+{
+  "channels": {
+    "dingtalk": {
+      "feedbackLearningEnabled": true,
+      "feedbackLearningNoteTtlMs": 21600000
+    }
+  }
+}
+```
 
 ## 安全策略
 

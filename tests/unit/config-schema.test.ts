@@ -81,4 +81,15 @@ describe('DingTalkConfigSchema', () => {
 
         expect(parsed.accounts.main?.aicardDegradeMs).toBe(120000);
     });
+
+    it('accepts feedback learning config and default note ttl', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+            feedbackLearningEnabled: true,
+        }) as { feedbackLearningEnabled?: boolean; feedbackLearningNoteTtlMs?: number };
+
+        expect(parsed.feedbackLearningEnabled).toBe(true);
+        expect(parsed.feedbackLearningNoteTtlMs).toBe(6 * 60 * 60 * 1000);
+    });
 });

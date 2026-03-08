@@ -104,6 +104,12 @@ const DingTalkAccountConfigSchema = z.object({
 
   /** AICard degrade duration in milliseconds after trigger errors (default: 30 minutes) */
   aicardDegradeMs: z.number().int().min(60_000).optional().default(30 * 60 * 1000),
+
+  /** Enable local feedback-learning loop (default: false) */
+  feedbackLearningEnabled: z.boolean().optional().default(false),
+
+  /** Session learning note TTL in milliseconds (default: 6 hours) */
+  feedbackLearningNoteTtlMs: z.number().int().min(60_000).optional().default(6 * 60 * 60 * 1000),
 });
 
 /**

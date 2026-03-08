@@ -23,4 +23,21 @@ describe("card-callback-service", () => {
       feedbackAckText: "⚠️ 已收到你的点踩（反馈已记录，我会改进）",
     });
   });
+
+  it("extracts processQueryKey from embedded callback payload", () => {
+    expect(
+      analyzeCardCallback({
+        value: JSON.stringify({
+          processQueryKey: "pqk_123",
+          cardPrivateData: { actionIds: ["feedback_up"] },
+        }),
+        spaceType: "IM",
+        userId: "user_123",
+      }),
+    ).toMatchObject({
+      actionId: "feedback_up",
+      processQueryKey: "pqk_123",
+      feedbackTarget: "user_123",
+    });
+  });
 });

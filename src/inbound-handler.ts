@@ -26,6 +26,12 @@ import { acquireSessionLock } from "./session-lock";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
 import { appendQuoteJournalEntry, findQuoteJournalEntryByMsgId } from "./quote-journal";
 import { downloadGroupFile, getUnionIdByStaffId, resolveQuotedFile } from "./quoted-file-service";
+import {
+  analyzeImplicitNegativeFeedback,
+  buildLearningContextBlock,
+  isFeedbackLearningEnabled,
+  recordOutboundReplyForLearning,
+} from "./feedback-learning-service";
 import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
@@ -348,6 +354,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   });
 
   const to = isDirect ? senderId : groupId;
+  const feedbackLearningEnabled = isFeedbackLearningEnabled(dingtalkConfig);
 
   // 3) Select response mode (card vs markdown).
   // Card creation runs BEFORE media download so the user sees immediate visual
@@ -675,6 +682,23 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     mediaType,
   });
 
+  analyzeImplicitNegativeFeedback({
+    enabled: feedbackLearningEnabled,
+    storePath: accountStorePath,
+    accountId,
+    targetId: to,
+    signalText: content.text,
+    content,
+    noteTtlMs: dingtalkConfig.feedbackLearningNoteTtlMs,
+  });
+
+  const learningContextBlock = buildLearningContextBlock({
+    enabled: feedbackLearningEnabled,
+    storePath: accountStorePath,
+    accountId,
+    targetId: to,
+    content,
+  });
   const envelopeOptions = rt.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = rt.channel.session.readSessionUpdatedAt({
     storePath,
@@ -695,11 +719,13 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   const groupMembers = !isDirect ? formatGroupMembers(storePath, groupId) : undefined;
 
   const fromLabel = isDirect ? `${senderName} (${senderId})` : `${groupName} - ${senderName}`;
+  const modelInputText = learningContextBlock ? `${learningContextBlock}\n\n${inboundText}` : inboundText;
+
   const body = rt.channel.reply.formatInboundEnvelope({
     channel: "DingTalk",
     from: fromLabel,
     timestamp: data.createAt,
-    body: inboundText,
+    body: modelInputText,
     chatType: isDirect ? "direct" : "group",
     sender: { name: senderName, id: senderId },
     previousTimestamp,
@@ -708,8 +734,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: body,
-    RawBody: inboundText,
-    CommandBody: inboundText,
+    RawBody: modelInputText,
+    CommandBody: modelInputText,
     From: to,
     To: to,
     SessionKey: route.sessionKey,
@@ -959,6 +985,26 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           log?.debug?.(`[DingTalk] Failed to update card state to FAILED: ${stateErr.message}`);
         }
       }
+    }
+
+    const finalAnswerCandidate =
+      typeof lastCardContent === "string" && lastCardContent.trim()
+        ? lastCardContent
+        : typeof queuedFinal === "string" && queuedFinal.trim()
+          ? queuedFinal
+          : "";
+    if (finalAnswerCandidate && !isUnhandledStopReasonText(finalAnswerCandidate)) {
+      recordOutboundReplyForLearning({
+        enabled: feedbackLearningEnabled,
+        storePath: accountStorePath,
+        accountId,
+        targetId: to,
+        sessionKey: route.sessionKey,
+        question: inboundText,
+        answer: finalAnswerCandidate,
+        processQueryKey: currentAICard?.processQueryKey,
+        mode: useCardMode ? "card" : "markdown",
+      });
     }
   } finally {
     releaseSessionLock();

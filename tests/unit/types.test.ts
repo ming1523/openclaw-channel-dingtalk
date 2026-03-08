@@ -93,6 +93,8 @@ describe('types helpers', () => {
             channels: {
                 dingtalk: {
                     bypassProxyForSend: true,
+                    feedbackLearningEnabled: true,
+                    feedbackLearningNoteTtlMs: 120000,
                     accounts: {
                         main: { clientId: 'cli_main', clientSecret: 'sec_main' },
                     },
@@ -102,5 +104,7 @@ describe('types helpers', () => {
 
         const account = resolveDingTalkAccount(cfg, 'main');
         expect(account.bypassProxyForSend).toBe(true);
+        expect(account.feedbackLearningEnabled).toBe(true);
+        expect(account.feedbackLearningNoteTtlMs).toBe(120000);
     });
 });

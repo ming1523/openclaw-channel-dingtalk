@@ -3,6 +3,8 @@ export interface CardCallbackAnalysis {
   actionId?: string;
   feedbackTarget?: string;
   feedbackAckText?: string;
+  userId?: string;
+  processQueryKey?: string;
 }
 
 function stringifyCandidate(value: unknown): string {
@@ -73,9 +75,16 @@ export function extractCardActionId(data: any): string | undefined {
 export function analyzeCardCallback(data: any): CardCallbackAnalysis {
   const summary = extractCardActionSummary(data);
   const actionId = extractCardActionId(data);
+  const embeddedValue = parseEmbeddedJson(data?.value) as Record<string, any> | undefined;
+  const embeddedContent = parseEmbeddedJson(data?.content) as Record<string, any> | undefined;
+  const processQueryKey =
+    (typeof data?.processQueryKey === "string" && data.processQueryKey.trim()) ||
+    (typeof embeddedValue?.processQueryKey === "string" && embeddedValue.processQueryKey.trim()) ||
+    (typeof embeddedContent?.processQueryKey === "string" && embeddedContent.processQueryKey.trim()) ||
+    undefined;
 
   if (actionId !== "feedback_up" && actionId !== "feedback_down") {
-    return { summary, actionId };
+    return { summary, actionId, processQueryKey };
   }
 
   const spaceType = typeof data?.spaceType === "string" ? data.spaceType.trim().toLowerCase() : "";
@@ -92,5 +101,7 @@ export function analyzeCardCallback(data: any): CardCallbackAnalysis {
     actionId,
     feedbackTarget: feedbackTarget || undefined,
     feedbackAckText,
+    userId: userId || undefined,
+    processQueryKey,
   };
 }

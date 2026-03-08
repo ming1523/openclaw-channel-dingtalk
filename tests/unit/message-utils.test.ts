@@ -220,6 +220,57 @@ describe('message-utils', () => {
         expect(content.quoted?.mediaType).toBe('image');
     });
 
+    it('引用富文本多图时保留首图并提示图片数量', () => {
+        const message = {
+            msgId: 'test_multi_quote',
+            createAt: 0,
+            conversationType: '2',
+            conversationId: 'cid',
+            senderId: 'sid',
+            chatbotUserId: 'bot',
+            sessionWebhook: 'https://example.com',
+            msgtype: 'text',
+            text: {
+                content: '帮我看看',
+                isReplyMsg: true,
+                repliedMsg: {
+                    msgType: 'richText',
+                    content: {
+                        richText: [
+                            { msgType: 'text', content: '这里有两张图' },
+                            { msgType: 'picture', downloadCode: 'dl_pic_multi_1' },
+                            { msgType: 'picture', downloadCode: 'dl_pic_multi_2' },
+                        ],
+                    },
+                },
+            },
+        } as any;
+
+        const content = extractMessageContent(message);
+
+        expect(content.quoted?.prefix).toContain('含2张引用图片');
+        expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_multi_1');
+    });
+
+    it('richText 自身多图时保留首图并暴露 mediaPaths', () => {
+        const message = {
+            msgtype: 'richText',
+            content: {
+                richText: [
+                    { type: 'text', text: '你好' },
+                    { type: 'picture', downloadCode: 'dl_pic_1' },
+                    { type: 'picture', downloadCode: 'dl_pic_2' },
+                ],
+            },
+        } as any;
+
+        const content = extractMessageContent(message);
+
+        expect(content.mediaPath).toBe('dl_pic_1');
+        expect(content.mediaPaths).toEqual(['dl_pic_1', 'dl_pic_2']);
+        expect(content.mediaTypes).toEqual(['image', 'image']);
+    });
+
     it('其他未知 msgType — generic fallback prefix', () => {
         const message = {
             msgId: 'test',

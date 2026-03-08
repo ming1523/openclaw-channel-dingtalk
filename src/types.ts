@@ -253,7 +253,9 @@ export interface QuotedInfo {
 export interface MessageContent {
   text: string;
   mediaPath?: string;
+  mediaPaths?: string[];
   mediaType?: string;
+  mediaTypes?: string[];
   messageType: string;
   docSpaceId?: string;
   docFileId?: string;

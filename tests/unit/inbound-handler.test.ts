@@ -1435,4 +1435,54 @@ describe('inbound-handler', () => {
             fs.rmSync(rootDir, { recursive: true, force: true });
         }
     });
+
+    it('downloads multiple inbound media codes and forwards MediaPaths to runtime context', async () => {
+        const runtime = buildRuntime();
+        runtime.channel.reply.finalizeInboundContext = vi.fn().mockImplementation((ctx) => ctx);
+        runtime.channel.media.saveMediaBuffer = vi
+            .fn()
+            .mockResolvedValueOnce({ path: '/tmp/.openclaw/media/inbound/test-1.png', contentType: 'image/png' })
+            .mockResolvedValueOnce({ path: '/tmp/.openclaw/media/inbound/test-2.png', contentType: 'image/png' });
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock.mockReturnValue({
+            text: '看图',
+            messageType: 'richText',
+            mediaPath: 'dl_pic_1',
+            mediaPaths: ['dl_pic_1', 'dl_pic_2'],
+            mediaType: 'image',
+            mediaTypes: ['image', 'image'],
+        });
+        mockedAxiosPost.mockResolvedValue({ data: { downloadUrl: 'https://download.url/file' } } as any);
+        mockedAxiosGet.mockResolvedValue({
+            data: Buffer.from('abc'),
+            headers: { 'content-type': 'image/png' },
+        } as any);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', robotCode: 'robot_1' } as any,
+            data: {
+                msgId: 'multi_media_1',
+                msgtype: 'richText',
+                text: { content: '看图' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                MediaPath: '/tmp/.openclaw/media/inbound/test-1.png',
+                MediaPaths: ['/tmp/.openclaw/media/inbound/test-1.png', '/tmp/.openclaw/media/inbound/test-2.png'],
+                RawBody: expect.stringContaining('共解析到 2 个媒体附件'),
+            }),
+        );
+    });
 });

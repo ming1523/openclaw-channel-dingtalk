@@ -374,6 +374,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
+  const mediaPaths: string[] = [];
 
   if (
     content.quoted?.msgId &&
@@ -393,11 +394,22 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 
-  if (content.mediaPath && dingtalkConfig.robotCode) {
-    const media = await downloadMedia(dingtalkConfig, content.mediaPath, log);
-    if (media) {
-      mediaPath = media.path;
-      mediaType = media.mimeType;
+  const inboundMediaCodes = [
+    ...(Array.isArray(content.mediaPaths) ? content.mediaPaths : []),
+    ...(content.mediaPath ? [content.mediaPath] : []),
+  ].filter((code): code is string => Boolean(code && code.trim()));
+  const uniqueInboundMediaCodes = [...new Set(inboundMediaCodes)];
+  if (uniqueInboundMediaCodes.length > 0 && dingtalkConfig.robotCode) {
+    for (const code of uniqueInboundMediaCodes) {
+      const media = await downloadMedia(dingtalkConfig, code, log);
+      if (!media) {
+        continue;
+      }
+      mediaPaths.push(media.path);
+      if (!mediaPath) {
+        mediaPath = media.path;
+        mediaType = media.mimeType;
+      }
     }
   }
 
@@ -447,18 +459,6 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 
-  appendQuoteJournalEntry({
-    storePath,
-    accountId,
-    conversationId: data.conversationId,
-    msgId: data.msgId,
-    text: content.text,
-    messageType: content.messageType,
-    createdAt: data.createAt,
-    mediaPath,
-    mediaType,
-  });
-
   // Try downloading a quoted file from cached downloadCode/spaceId+fileId.
   const tryDownloadFromCache = async (
     quotedMsgId: string | undefined,
@@ -491,6 +491,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     if (media) {
       mediaPath = media.path;
       mediaType = media.mimeType;
+      mediaPaths.push(media.path);
     } else {
       content.text = content.text.replace(
         content.quoted.prefix, "[引用了一张图片，但下载失败]\n\n",
@@ -507,6 +508,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     if (cachedMedia) {
       mediaPath = cachedMedia.path;
       mediaType = cachedMedia.mimeType;
+      mediaPaths.push(cachedMedia.path);
       fileResolved = true;
     }
 
@@ -520,6 +522,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       if (resolved) {
         mediaPath = resolved.media.path;
         mediaType = resolved.media.mimeType;
+        mediaPaths.push(resolved.media.path);
         fileResolved = true;
         if (content.quoted.msgId) {
           cacheInboundDownloadCode(
@@ -558,6 +561,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     if (cachedDocMedia) {
       mediaPath = cachedDocMedia.path;
       mediaType = cachedDocMedia.mimeType;
+      mediaPaths.push(cachedDocMedia.path);
       docResolved = true;
       content.text = content.text.replace(content.quoted.prefix, "[引用了钉钉文档]\n\n");
     }
@@ -571,6 +575,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       if (resolved) {
         mediaPath = resolved.media.path;
         mediaType = resolved.media.mimeType;
+        mediaPaths.push(resolved.media.path);
         docResolved = true;
         content.text = content.text.replace(content.quoted.prefix, "[引用了钉钉文档]\n\n");
         if (content.quoted.msgId) {
@@ -618,10 +623,25 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     // Card cache miss: prefix already contains "[引用了机器人的回复]", keep as-is.
   }
 
+  if (mediaPaths.length > 1) {
+    content.text = `${content.text}\n\n[系统提示] 本条消息共解析到 ${mediaPaths.length} 个媒体附件，请逐个查看后回答。`;
+  }
   const inboundText =
     mediaPath && /<media:[^>]+>/.test(content.text)
       ? `${content.text}\n[media_path: ${mediaPath}]\n[media_type: ${mediaType || "unknown"}]`
       : content.text;
+  appendQuoteJournalEntry({
+    storePath,
+    accountId,
+    conversationId: data.conversationId,
+    msgId: data.msgId,
+    text: inboundText,
+    messageType: content.messageType,
+    createdAt: data.createAt,
+    mediaPath,
+    mediaType,
+  });
+
   const envelopeOptions = rt.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = rt.channel.session.readSessionUpdatedAt({
     storePath,
@@ -671,6 +691,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     MessageSid: data.msgId,
     Timestamp: data.createAt,
     MediaPath: mediaPath,
+    MediaPaths: mediaPaths.length > 0 ? mediaPaths : undefined,
     MediaType: mediaType,
     MediaUrl: mediaPath,
     GroupMembers: groupMembers,

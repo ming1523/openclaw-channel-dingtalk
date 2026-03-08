@@ -28,7 +28,16 @@ export function isOwnerStatusCommand(text: string | undefined): boolean {
 }
 
 export function isLearnCommand(text: string | undefined): boolean {
-  return String(text || "").trim().toLowerCase().startsWith("/learn ");
+  const normalized = String(text || "").trim().toLowerCase();
+  return normalized.startsWith("/learn ")
+    || normalized.startsWith("全局注入：")
+    || normalized.startsWith("全局注入:")
+    || normalized.startsWith("注入全局：")
+    || normalized.startsWith("注入全局:")
+    || normalized.startsWith("全局知识：")
+    || normalized.startsWith("全局知识:")
+    || normalized.startsWith("当前会话注入：")
+    || normalized.startsWith("当前会话注入:");
 }
 
 export function parseLearnCommand(text: string | undefined): ParsedLearnCommand {
@@ -39,6 +48,14 @@ export function parseLearnCommand(text: string | undefined): ParsedLearnCommand 
   const normalized = raw.toLowerCase();
   if (normalized === "/learn list") {
     return { scope: "list" };
+  }
+  if (raw.startsWith("全局注入：") || raw.startsWith("全局注入:") || raw.startsWith("注入全局：") || raw.startsWith("注入全局:") || raw.startsWith("全局知识：") || raw.startsWith("全局知识:")) {
+    const instruction = raw.replace(/^(全局注入[:：]|注入全局[:：]|全局知识[:：])/, "").trim();
+    return { scope: "global", instruction };
+  }
+  if (raw.startsWith("当前会话注入：") || raw.startsWith("当前会话注入:")) {
+    const instruction = raw.replace(/^(当前会话注入[:：])/, "").trim();
+    return { scope: "session", instruction };
   }
   if (normalized.startsWith("/learn global ")) {
     return { scope: "global", instruction: raw.slice("/learn global ".length).trim() };
@@ -115,7 +132,9 @@ export function formatLearnCommandHelp(): string {
     "可用的 owner 学习命令：",
     "",
     "- /learn global <规则>：发布到当前钉钉账号下所有会话",
+    "- 全局注入：<规则> / 注入全局：<规则> / 全局知识：<规则>：上面命令的中文别名",
     "- /learn session <规则>：仅发布到当前私聊会话",
+    "- 当前会话注入：<规则>：上面命令的中文别名",
     "- /learn list：查看当前全局规则摘要",
   ].join("\n");
 }

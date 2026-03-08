@@ -564,7 +564,8 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         clientSecret: config.clientSecret,
         debug: config.debug || false,
         // keepAlive can be noisy/unstable in some network/proxy environments.
-        keepAlive: config.keepAlive ?? false,
+        // When ConnectionManager is disabled, fall back to native keepAlive unless explicitly overridden.
+        keepAlive: config.keepAlive ?? !useConnectionManager,
       });
 
       instrumentConnectionStages(client);

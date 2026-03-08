@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 

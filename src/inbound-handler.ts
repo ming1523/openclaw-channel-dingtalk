@@ -13,9 +13,6 @@ import { resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
-  formatLearnAppliedReply,
-  formatLearnCommandHelp,
-  formatLearnListReply,
   formatOwnerOnlyDeniedReply,
   formatOwnerStatusReply,
   formatWhoAmIReply,
@@ -23,7 +20,6 @@ import {
   isLearningOwner,
   isOwnerStatusCommand,
   isWhoAmICommand,
-  parseLearnCommand,
 } from "./learning-command-service";
 import { extractMessageContent } from "./message-utils";
 import { registerPeerId } from "./peer-id-registry";
@@ -38,11 +34,6 @@ import { AICardStatus } from "./types";
 import { acquireSessionLock } from "./session-lock";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
 import { downloadGroupFile, getUnionIdByStaffId, resolveQuotedFile } from "./quoted-file-service";
-import {
-  applyManualGlobalLearningRule,
-  applyManualSessionLearningNote,
-} from "./feedback-learning-service";
-import { listLearnedRules } from "./feedback-learning-store";
 import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
@@ -359,14 +350,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       dingtalkConfig,
       sessionWebhook,
       formatWhoAmIReply({
-        accountId,
         senderId,
         rawSenderId: data.senderId,
         senderStaffId: data.senderStaffId,
-        conversationId: data.conversationId,
-        conversationType: data.conversationType,
-        agentId: route.agentId,
-        sessionKey: route.sessionKey,
         isOwner,
       }),
       { log },
@@ -381,65 +367,16 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         senderId,
         rawSenderId: data.senderId,
         isOwner,
-        ownerAllowFrom: dingtalkConfig.ownerAllowFrom,
       }),
       { log },
     );
     return;
   }
-  if (isDirect && isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text) && !isOwner) {
+  if (isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text) && !isOwner) {
     await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
     return;
   }
-  if (isDirect && isOwner && isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text)) {
-    const learnCommand = parseLearnCommand(content.text);
-    if (learnCommand.scope === "global" && learnCommand.instruction) {
-      const applied = applyManualGlobalLearningRule({
-        storePath: accountStorePath,
-        accountId,
-        instruction: learnCommand.instruction,
-      });
-      await sendBySession(
-        dingtalkConfig,
-        sessionWebhook,
-        formatLearnAppliedReply({
-          scope: "global",
-          instruction: learnCommand.instruction,
-          ruleId: applied?.ruleId,
-        }),
-        { log },
-      );
-      return;
-    }
-    if (learnCommand.scope === "session" && learnCommand.instruction) {
-      applyManualSessionLearningNote({
-        storePath,
-        accountId,
-        targetId: data.conversationId,
-        instruction: learnCommand.instruction,
-      });
-      await sendBySession(
-        dingtalkConfig,
-        sessionWebhook,
-        formatLearnAppliedReply({
-          scope: "session",
-          instruction: learnCommand.instruction,
-        }),
-        { log },
-      );
-      return;
-    }
-    if (learnCommand.scope === "list") {
-      const rules = listLearnedRules({ storePath: accountStorePath, accountId })
-        .filter((rule) => rule.enabled)
-        .slice(0, 10)
-        .map((rule) => `- ${rule.ruleId}: ${rule.instruction}`);
-      await sendBySession(dingtalkConfig, sessionWebhook, formatLearnListReply(rules), { log });
-      return;
-    }
-    await sendBySession(dingtalkConfig, sessionWebhook, formatLearnCommandHelp(), { log });
-    return;
-  }
+
   // 3) Select response mode (card vs markdown).
   // Card creation runs BEFORE media download so the user sees immediate visual
   // feedback while large files are still being downloaded.

@@ -290,7 +290,7 @@ describe('inbound-handler', () => {
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
+            dingtalkConfig: { dmPolicy: 'allowlist', allowFrom: ['owner-test-id'] } as any,
             data: {
                 msgId: 'm2_owner_status',
                 msgtype: 'text',
@@ -317,7 +317,7 @@ describe('inbound-handler', () => {
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
+            dingtalkConfig: { dmPolicy: 'allowlist', allowFrom: ['owner-test-id'] } as any,
             data: {
                 msgId: 'm2_owner_status_alias',
                 msgtype: 'text',
@@ -370,7 +370,7 @@ describe('inbound-handler', () => {
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
+            dingtalkConfig: { dmPolicy: 'allowlist', allowFrom: ['owner-test-id'] } as any,
             data: {
                 msgId: 'm2_owner_status_en',
                 msgtype: 'text',
@@ -397,13 +397,13 @@ describe('inbound-handler', () => {
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
+            dingtalkConfig: { groupPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
             data: {
                 msgId: 'm2_owner_deny',
                 msgtype: 'text',
                 text: { content: '/learn global test' },
-                conversationType: '1',
-                conversationId: 'cid_dm_owner',
+                conversationType: '2',
+                conversationId: 'cid_group_owner_gate',
                 senderId: 'user_not_owner',
                 chatbotUserId: 'bot_1',
                 sessionWebhook: 'https://session.webhook',

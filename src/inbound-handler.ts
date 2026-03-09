@@ -19,10 +19,7 @@ import {
   formatOwnerOnlyDeniedReply,
   formatOwnerStatusReply,
   formatWhoAmIReply,
-  isLearnCommand,
   isLearningOwner,
-  isOwnerStatusCommand,
-  isWhoAmICommand,
   parseLearnCommand,
 } from "./learning-command-service";
 import { extractMessageContent } from "./message-utils";
@@ -351,11 +348,14 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   });
 
   const to = isDirect ? senderId : groupId;
-  const isOwner = isLearningOwner(dingtalkConfig, {
+  const parsedLearnCommand = parseLearnCommand(content.text);
+  const isOwner = isLearningOwner({
+    cfg,
+    config: dingtalkConfig,
     senderId,
     rawSenderId: data.senderId,
   });
-  if (isDirect && isWhoAmICommand(content.text)) {
+  if (isDirect && parsedLearnCommand.scope === "whoami") {
     await sendBySession(
       dingtalkConfig,
       sessionWebhook,
@@ -369,7 +369,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
     return;
   }
-  if (isDirect && isOwnerStatusCommand(content.text)) {
+  if (isDirect && parsedLearnCommand.scope === "owner-status") {
     await sendBySession(
       dingtalkConfig,
       sessionWebhook,
@@ -382,49 +382,53 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
     return;
   }
-  if (isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text) && !isOwner) {
+  if (
+    (parsedLearnCommand.scope === "global"
+      || parsedLearnCommand.scope === "session"
+      || parsedLearnCommand.scope === "list")
+    && !isOwner
+  ) {
     await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
     return;
   }
-  if (isDirect && isOwner && isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text)) {
-    const learnCommand = parseLearnCommand(content.text);
-    if (learnCommand.scope === "global" && learnCommand.instruction) {
+  if (isDirect && isOwner) {
+    if (parsedLearnCommand.scope === "global" && parsedLearnCommand.instruction) {
       const applied = applyManualGlobalLearningRule({
         storePath: accountStorePath,
         accountId,
-        instruction: learnCommand.instruction,
+        instruction: parsedLearnCommand.instruction,
       });
       await sendBySession(
         dingtalkConfig,
         sessionWebhook,
         formatLearnAppliedReply({
           scope: "global",
-          instruction: learnCommand.instruction,
+          instruction: parsedLearnCommand.instruction,
           ruleId: applied?.ruleId,
         }),
         { log },
       );
       return;
     }
-    if (learnCommand.scope === "session" && learnCommand.instruction) {
+    if (parsedLearnCommand.scope === "session" && parsedLearnCommand.instruction) {
       applyManualSessionLearningNote({
         storePath,
         accountId,
         targetId: data.conversationId,
-        instruction: learnCommand.instruction,
+        instruction: parsedLearnCommand.instruction,
       });
       await sendBySession(
         dingtalkConfig,
         sessionWebhook,
         formatLearnAppliedReply({
           scope: "session",
-          instruction: learnCommand.instruction,
+          instruction: parsedLearnCommand.instruction,
         }),
         { log },
       );
       return;
     }
-    if (learnCommand.scope === "list") {
+    if (parsedLearnCommand.scope === "list") {
       const rules = listLearnedRules({ storePath: accountStorePath, accountId })
         .filter((rule) => rule.enabled)
         .slice(0, 10)

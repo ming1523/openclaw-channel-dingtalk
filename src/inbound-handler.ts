@@ -13,9 +13,6 @@ import { resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
-  formatLearnAppliedReply,
-  formatLearnCommandHelp,
-  formatLearnListReply,
   formatOwnerOnlyDeniedReply,
   formatOwnerStatusReply,
   formatWhoAmIReply,
@@ -360,14 +357,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       dingtalkConfig,
       sessionWebhook,
       formatWhoAmIReply({
-        accountId,
         senderId,
         rawSenderId: data.senderId,
         senderStaffId: data.senderStaffId,
-        conversationId: data.conversationId,
-        conversationType: data.conversationType,
-        agentId: route.agentId,
-        sessionKey: route.sessionKey,
         isOwner,
       }),
       { log },
@@ -382,13 +374,12 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         senderId,
         rawSenderId: data.senderId,
         isOwner,
-        ownerAllowFrom: dingtalkConfig.ownerAllowFrom,
       }),
       { log },
     );
     return;
   }
-  if (isDirect && isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text) && !isOwner) {
+  if (isLearnCommand(content.text) && !isWhoAmICommand(content.text) && !isOwnerStatusCommand(content.text) && !isOwner) {
     await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
     return;
   }

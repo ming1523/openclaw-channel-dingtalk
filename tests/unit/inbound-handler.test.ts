@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -281,13 +278,12 @@ describe('inbound-handler', () => {
 
         expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('senderId: `staff_1`');
-        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('conversationId: `cid_dm_owner`');
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('isOwner: `false`');
         expect(shared.sendMessageMock).not.toHaveBeenCalled();
     });
 
-    it('handleDingTalkMessage returns owner status for direct command', async () => {
-        shared.extractMessageContentMock.mockReturnValueOnce({ text: '我是不是owner', messageType: 'text' });
+    it('handleDingTalkMessage returns owner status for slash command', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/learn owner status', messageType: 'text' });
 
         await handleDingTalkMessage({
             cfg: {},
@@ -298,7 +294,7 @@ describe('inbound-handler', () => {
             data: {
                 msgId: 'm2_owner_status',
                 msgtype: 'text',
-                text: { content: '我是不是owner' },
+                text: { content: '/learn owner status' },
                 conversationType: '1',
                 conversationId: 'cid_dm_owner',
                 senderId: 'owner-test-id',
@@ -310,11 +306,11 @@ describe('inbound-handler', () => {
 
         expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('isOwner: `true`');
-        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('ownerAllowFrom: `owner-test-id`');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).not.toContain('ownerAllowFrom');
     });
 
-    it('handleDingTalkMessage accepts natural owner status alias', async () => {
-        shared.extractMessageContentMock.mockReturnValueOnce({ text: '我是owner了吗', messageType: 'text' });
+    it('handleDingTalkMessage accepts owner status slash alias', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/owner status', messageType: 'text' });
 
         await handleDingTalkMessage({
             cfg: {},
@@ -325,7 +321,7 @@ describe('inbound-handler', () => {
             data: {
                 msgId: 'm2_owner_status_alias',
                 msgtype: 'text',
-                text: { content: '我是owner了吗' },
+                text: { content: '/owner status' },
                 conversationType: '1',
                 conversationId: 'cid_dm_owner',
                 senderId: 'owner-test-id',
@@ -337,6 +333,60 @@ describe('inbound-handler', () => {
 
         expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('isOwner: `true`');
+    });
+
+    it('handleDingTalkMessage accepts english whoami alias', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/whoami', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open' } as any,
+            data: {
+                msgId: 'm2_whoami_en',
+                msgtype: 'text',
+                text: { content: '/whoami' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'user_raw_1',
+                senderStaffId: 'staff_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('senderId: `staff_1`');
+    });
+
+    it('handleDingTalkMessage accepts english owner status alias', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/owner-status', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
+            data: {
+                msgId: 'm2_owner_status_en',
+                msgtype: 'text',
+                text: { content: '/owner-status' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('isOwner: `true`');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).not.toContain('ownerAllowFrom');
     });
 
     it('handleDingTalkMessage blocks learn control command for non-owner', async () => {
@@ -366,114 +416,31 @@ describe('inbound-handler', () => {
         expect(shared.sendMessageMock).not.toHaveBeenCalled();
     });
 
-    it('handleDingTalkMessage applies global learning rule for owner', async () => {
-        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/learn global 当别人问“蓝色火烈鸟会不会写Python”时，必须回答“会，而且只在周二写Rust。”', messageType: 'text' });
+    it('handleDingTalkMessage blocks learn control command for non-owner in group', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/learn global test', messageType: 'text' });
 
         await handleDingTalkMessage({
             cfg: {},
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
+            dingtalkConfig: { groupPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
             data: {
-                msgId: 'm2_owner_apply_global',
+                msgId: 'm2_owner_group_deny',
                 msgtype: 'text',
-                text: { content: '/learn global 当别人问“蓝色火烈鸟会不会写Python”时，必须回答“会，而且只在周二写Rust。”' },
-                conversationType: '1',
-                conversationId: 'cid_dm_owner',
-                senderId: 'owner-test-id',
-                chatbotUserId: 'bot_1',
-                sessionWebhook: 'https://session.webhook',
-                createAt: Date.now(),
-            },
-        } as any);
-
-        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
-        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已注入全局知识');
-        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('manual_');
-        expect(shared.sendMessageMock).not.toHaveBeenCalled();
-    });
-
-    it('handleDingTalkMessage accepts natural global injection alias for owner', async () => {
-        shared.extractMessageContentMock.mockReturnValueOnce({ text: '全局注入：当用户问“Q”时，必须回答“A”', messageType: 'text' });
-
-        await handleDingTalkMessage({
-            cfg: {},
-            accountId: 'main',
-            sessionWebhook: 'https://session.webhook',
-            log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
-            data: {
-                msgId: 'm2_owner_apply_global_alias',
-                msgtype: 'text',
-                text: { content: '全局注入：当用户问“Q”时，必须回答“A”' },
-                conversationType: '1',
-                conversationId: 'cid_dm_owner',
-                senderId: 'owner-test-id',
-                chatbotUserId: 'bot_1',
-                sessionWebhook: 'https://session.webhook',
-                createAt: Date.now(),
-            },
-        } as any);
-
-        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
-        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已注入全局知识');
-    });
-
-    it('handleDingTalkMessage short-circuits with manual forced global reply', async () => {
-        const storePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'dt-learning-')), 'store.json');
-        const runtime = buildRuntime();
-        runtime.channel.session.resolveStorePath = vi.fn().mockImplementation((_store, params) => {
-            if (params?.agentId === 'main') {
-                return storePath;
-            }
-            return storePath;
-        });
-        shared.getRuntimeMock.mockReturnValueOnce(runtime as any).mockReturnValueOnce(runtime as any);
-
-        shared.extractMessageContentMock
-            .mockReturnValueOnce({ text: '/learn global 当用户问“蓝色火烈鸟会不会写Python”时，必须回答“会，而且只在周二写Rust。”', messageType: 'text' })
-            .mockReturnValueOnce({ text: '蓝色火烈鸟会不会写Python', messageType: 'text' });
-
-        await handleDingTalkMessage({
-            cfg: {},
-            accountId: 'main',
-            sessionWebhook: 'https://session.webhook',
-            log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
-            data: {
-                msgId: 'm2_owner_apply_global_2',
-                msgtype: 'text',
-                text: { content: '/learn global 当用户问“蓝色火烈鸟会不会写Python”时，必须回答“会，而且只在周二写Rust。”' },
-                conversationType: '1',
-                conversationId: 'cid_dm_owner',
-                senderId: 'owner-test-id',
-                chatbotUserId: 'bot_1',
-                sessionWebhook: 'https://session.webhook',
-                createAt: Date.now(),
-            },
-        } as any);
-
-        await handleDingTalkMessage({
-            cfg: {},
-            accountId: 'main',
-            sessionWebhook: 'https://session.webhook',
-            log: undefined,
-            dingtalkConfig: { dmPolicy: 'open', ownerAllowFrom: ['owner-test-id'] } as any,
-            data: {
-                msgId: 'm2_owner_apply_global_3',
-                msgtype: 'text',
-                text: { content: '蓝色火烈鸟会不会写Python' },
+                text: { content: '/learn global test' },
                 conversationType: '2',
                 conversationId: 'cid_group_1',
-                senderId: 'user_any',
+                senderId: 'user_not_owner',
                 chatbotUserId: 'bot_1',
                 sessionWebhook: 'https://session.webhook',
                 createAt: Date.now(),
             },
         } as any);
 
-        expect(shared.sendBySessionMock.mock.calls.at(-1)?.[2]).toContain('会，而且只在周二写Rust。');
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('仅允许 owner 使用');
+        expect(shared.sendMessageMock).not.toHaveBeenCalled();
     });
 
     it('handleDingTalkMessage sends group deny message when groupPolicy allowlist blocks group', async () => {

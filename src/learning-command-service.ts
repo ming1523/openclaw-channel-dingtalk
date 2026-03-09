@@ -1,36 +1,46 @@
 import { normalizeAllowFrom, isSenderOwner } from "./access-control";
 import type { DingTalkConfig } from "./types";
 
-export function isWhoAmICommand(text: string | undefined): boolean {
-  const normalized = String(text || "").trim().toLowerCase();
+export type ParsedLearningCommand =
+  | { kind: "none" }
+  | { kind: "whoami" }
+  | { kind: "owner-status" }
+  | { kind: "learn"; text: string };
+
+export function parseLearningCommand(text: string | undefined): ParsedLearningCommand {
+  const raw = String(text || "").trim();
+  const normalized = raw.toLowerCase();
   if (!normalized) {
-    return false;
+    return { kind: "none" };
   }
-  return normalized === "/learn whoami"
+  if (
+    normalized === "/learn whoami"
     || normalized === "/whoami"
     || normalized === "我是谁"
-    || normalized === "我的信息";
-}
-
-export function isOwnerStatusCommand(text: string | undefined): boolean {
-  const normalized = String(text || "").trim().toLowerCase();
-  if (!normalized) {
-    return false;
+    || normalized === "我的信息"
+  ) {
+    return { kind: "whoami" };
   }
-  return normalized === "/learn owner status"
+  if (
+    normalized === "/learn owner status"
     || normalized === "/owner status"
-    || normalized === "/owner-status";
+    || normalized === "/owner-status"
+  ) {
+    return { kind: "owner-status" };
+  }
+  if (normalized.startsWith("/learn ")) {
+    return { kind: "learn", text: raw };
+  }
+  return { kind: "none" };
 }
 
-export function isLearnCommand(text: string | undefined): boolean {
-  return String(text || "").trim().toLowerCase().startsWith("/learn ");
-}
-
-export function isLearningOwner(config: DingTalkConfig | undefined, params: {
+export function isLearningOwner(params: {
+  cfg?: { commands?: { ownerAllowFrom?: Array<string | number> } };
+  config?: DingTalkConfig;
   senderId?: string;
   rawSenderId?: string;
 }): boolean {
-  const allow = normalizeAllowFrom(config?.allowFrom);
+  const allow = normalizeAllowFrom(params.cfg?.commands?.ownerAllowFrom as string[] | undefined);
   return isSenderOwner({ allow, senderId: params.senderId, rawSenderId: params.rawSenderId });
 }
 
@@ -69,5 +79,5 @@ export function formatOwnerStatusReply(params: {
 }
 
 export function formatOwnerOnlyDeniedReply(): string {
-  return "这条学习/控制命令仅允许 owner 使用。先发送“我是谁”确认你的 senderId，再由宿主配置将该 senderId 加入 allowFrom。";
+  return "这条学习/控制命令仅允许 owner 使用。先发送“我是谁”确认你的 senderId，再由宿主将该 senderId 加入 commands.ownerAllowFrom。";
 }

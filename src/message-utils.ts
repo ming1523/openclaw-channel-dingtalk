@@ -122,34 +122,15 @@ export function detectMarkdownAndExtractTitle(
 }
 
 function isMarkdownTableSeparator(line: string): boolean {
-  const normalized = line.trim();
-  if (!normalized.includes("-")) {
-    return false;
-  }
-  const cells = normalized
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
 }
 
-function isMarkdownTableRow(line: string): boolean {
-  const trimmed = line.trim();
-  return trimmed.includes("|") && !trimmed.startsWith("```");
+function splitMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
 }
 
-function parseMarkdownTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function renderMarkdownTable(lines: string[]): string {
-  const rows = lines.map(parseMarkdownTableRow).filter((cells) => cells.length > 0);
+function renderMarkdownTableRows(rows: string[][]): string {
   return rows.map((cells) => cells.join(" | ")).join("\n");
 }
 
@@ -157,40 +138,43 @@ export function convertMarkdownTablesToPlainText(text: string): string {
   const lines = text.split("\n");
   const output: string[] = [];
   let index = 0;
-  let inCodeFence = false;
 
   while (index < lines.length) {
-    const line = lines[index] || "";
-    if (line.trim().startsWith("```")) {
-      inCodeFence = !inCodeFence;
-      output.push(line);
-      index += 1;
-      continue;
-    }
+    const header = lines[index];
+    const separator = lines[index + 1];
 
-    if (
-      !inCodeFence &&
-      index + 1 < lines.length &&
-      isMarkdownTableRow(line) &&
-      isMarkdownTableSeparator(lines[index + 1] || "")
-    ) {
-      const tableLines = [line];
+    if (header && separator && header.includes("|") && isMarkdownTableSeparator(separator)) {
+      const rows: string[][] = [splitMarkdownTableRow(header)];
       index += 2;
-      while (index < lines.length && isMarkdownTableRow(lines[index] || "")) {
-        tableLines.push(lines[index] || "");
+
+      while (index < lines.length && lines[index].includes("|")) {
+        rows.push(splitMarkdownTableRow(lines[index]));
         index += 1;
       }
-      output.push(renderMarkdownTable(tableLines));
+
+      output.push(renderMarkdownTableRows(rows));
       continue;
     }
 
-    output.push(line);
+    output.push(lines[index]);
     index += 1;
   }
 
   return output.join("\n");
 }
 
+function dedupeMentions(values: string[]): string[] | undefined {
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return [...new Set(normalized)];
+}
+
+function extractMentionsFromText(text: string): string[] | undefined {
+  const matches = [...text.matchAll(/@([^\s@]+)/g)].map((match) => match[1] || "");
+  return dedupeMentions(matches);
+}
 export function extractMessageContent(data: DingTalkInboundMessage): MessageContent {
   const msgtype = data.msgtype || "text";
 
@@ -307,13 +291,20 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
   const quotedPrefix = quoted?.prefix || "";
 
   if (msgtype === "text") {
-    return { text: quotedPrefix + (data.text?.content?.trim() || ""), messageType: "text", quoted: quoted ?? undefined };
+    const text = data.text?.content?.trim() || "";
+    return {
+      text: quotedPrefix + text,
+      messageType: "text",
+      quoted: quoted ?? undefined,
+      mentions: extractMentionsFromText(text),
+    };
   }
 
   if (msgtype === "richText") {
     const richTextParts = data.content?.richText || [];
     let text = "";
     const pictureDownloadCodes: string[] = [];
+    const mentionNames: string[] = [];
     // Keep first image downloadCode while preserving readable text and @mention parts.
     for (const part of richTextParts) {
       if (part.text && (part.type === "text" || part.type === undefined)) {
@@ -321,6 +312,7 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       }
       if (part.type === "at" && part.atName) {
         text += `@${part.atName} `;
+        mentionNames.push(part.atName);
       }
       if (part.type === "picture" && part.downloadCode) {
         pictureDownloadCodes.push(part.downloadCode);
@@ -337,6 +329,7 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       mediaTypes: uniquePictureDownloadCodes.length > 0 ? uniquePictureDownloadCodes.map(() => "image") : undefined,
       messageType: "richText",
       quoted: quoted ?? undefined,
+      mentions: dedupeMentions(mentionNames),
     };
   }
 

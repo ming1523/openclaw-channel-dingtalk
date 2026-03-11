@@ -103,7 +103,7 @@ function buildRuntime() {
             reply: {
                 resolveEnvelopeFormatOptions: vi.fn().mockReturnValue({}),
                 formatInboundEnvelope: vi.fn().mockReturnValue('body'),
-                finalizeInboundContext: vi.fn().mockReturnValue({ SessionKey: 's1' }),
+                finalizeInboundContext: vi.fn().mockImplementation((ctx) => ({ SessionKey: 's1', ...ctx })),
                 dispatchReplyWithBufferedBlockDispatcher: vi.fn().mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
                     await replyOptions?.onReasoningStream?.({ text: 'thinking' });
                     await dispatcherOptions.deliver({ text: 'tool output' }, { kind: 'tool' });
@@ -495,6 +495,32 @@ describe('inbound-handler', () => {
         expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('仅允许 owner 使用');
         expect(shared.sendMessageMock).not.toHaveBeenCalled();
+    });
+
+    it('handleDingTalkMessage blocks summary command for non-owner', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/summary group 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open' } as any,
+            data: {
+                msgId: 'm_summary_deny',
+                msgtype: 'text',
+                text: { content: '/summary group 1d' },
+                conversationType: '2',
+                conversationId: 'cid_group_1',
+                senderId: 'user_not_owner',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('仅允许 owner 使用');
     });
 
     it('handleDingTalkMessage supports whereami command in group', async () => {
@@ -1236,6 +1262,405 @@ describe('inbound-handler', () => {
         expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
             expect.objectContaining({
                 GroupSystemPrompt: expect.stringContaining('回复当前私聊时，先说这是 session 规则。'),
+            }),
+        );
+    });
+
+    it('injects recent group messages into InboundHistory for later turns', async () => {
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-history-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '第一条群消息', messageType: 'text' })
+            .mockReturnValueOnce({ text: '第二条群消息', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 5, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_history_1',
+                msgtype: 'text',
+                text: { content: '第一条群消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_history',
+                conversationTitle: '群聊A',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: 1700000000000,
+            },
+        } as any);
+
+        runtime.channel.reply.finalizeInboundContext.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 5, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_history_2',
+                msgtype: 'text',
+                text: { content: '第二条群消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_history',
+                conversationTitle: '群聊A',
+                senderId: 'user_2',
+                senderNick: '乙',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: 1700000001000,
+            },
+        } as any);
+
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                InboundHistory: expect.arrayContaining([
+                    expect.objectContaining({
+                        sender: '甲 (user_1)',
+                        body: '第一条群消息',
+                        messageId: 'm_history_1',
+                        timestamp: 1700000000000,
+                    }),
+                ]),
+            }),
+        );
+    });
+
+    it('handleDingTalkMessage returns summary reply for owner', async () => {
+        const nowMs = Date.now();
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-summary-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ ctx, dispatcherOptions }) => {
+            if (String(ctx.SessionKey || '').includes('::summary')) {
+                expect(ctx.Body).toContain('第一条群消息');
+                expect(ctx.Body).toContain('final output');
+            }
+            await dispatcherOptions.deliver({ text: '自然语言总结：群聊Summary 里主要在讨论第一条群消息。' }, { kind: 'final' });
+            return { queuedFinal: '自然语言总结：群聊Summary 里主要在讨论第一条群消息。' };
+        });
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '第一条群消息', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/summary group 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_seed',
+                msgtype: 'text',
+                text: { content: '第一条群消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_summary',
+                conversationTitle: '群聊Summary',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 60_000,
+            },
+        } as any);
+
+        shared.sendBySessionMock.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_run',
+                msgtype: 'text',
+                text: { content: '/summary group 1d' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs,
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('自然语言总结');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('群聊Summary');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('第一条群消息');
+    });
+
+    it('handleDingTalkMessage filters summary by mention name', async () => {
+        const nowMs = Date.now();
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-summary-mention-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ ctx, dispatcherOptions }) => {
+            if (String(ctx.SessionKey || '').includes('::summary')) {
+                expect(ctx.Body).toContain('@小明 今天上线么');
+                expect(ctx.Body).not.toContain('普通消息');
+            }
+            await dispatcherOptions.deliver({ text: '自然语言总结：提到小明的消息主要是在问今天是否上线。' }, { kind: 'final' });
+            return { queuedFinal: '自然语言总结：提到小明的消息主要是在问今天是否上线。' };
+        });
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '@小明 今天上线么', messageType: 'richText', mentions: ['小明'] })
+            .mockReturnValueOnce({ text: '普通消息', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/summary mention 小明 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_mention_1',
+                msgtype: 'richText',
+                content: { richText: [{ type: 'at', atName: '小明' }, { type: 'text', text: ' 今天上线么' }] } as any,
+                conversationType: '2',
+                conversationId: 'cid_group_summary_mention',
+                conversationTitle: '群聊SummaryMention',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 60_000,
+            },
+        } as any);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_mention_2',
+                msgtype: 'text',
+                text: { content: '普通消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_summary_mention',
+                conversationTitle: '群聊SummaryMention',
+                senderId: 'user_2',
+                senderNick: '乙',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 30_000,
+            },
+        } as any);
+
+        shared.sendBySessionMock.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_mention_run',
+                msgtype: 'text',
+                text: { content: '/summary mention 小明 1d' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs,
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('自然语言总结');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('小明');
+    });
+
+    it('handleDingTalkMessage resolves summary mention self alias', async () => {
+        const nowMs = Date.now();
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-summary-mention-self-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ ctx, dispatcherOptions }) => {
+            if (String(ctx.SessionKey || '').includes('::summary')) {
+                expect(ctx.Body).toContain('@宿主 请确认今天版本');
+            }
+            await dispatcherOptions.deliver({ text: '自然语言总结：最近被 @宿主 的消息是在催确认今天版本。' }, { kind: 'final' });
+            return { queuedFinal: '自然语言总结：最近被 @宿主 的消息是在催确认今天版本。' };
+        });
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '@宿主 请确认今天版本', messageType: 'richText', mentions: ['宿主'] })
+            .mockReturnValueOnce({ text: '/summary mention me 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_me_1',
+                msgtype: 'richText',
+                content: { richText: [{ type: 'at', atName: '宿主' }, { type: 'text', text: ' 请确认今天版本' }] } as any,
+                conversationType: '2',
+                conversationId: 'cid_group_summary_me',
+                conversationTitle: '群聊SummaryMe',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 30_000,
+            },
+        } as any);
+
+        shared.sendBySessionMock.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_summary_me_run',
+                msgtype: 'text',
+                text: { content: '/summary mention me 1d' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs,
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('自然语言总结');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('宿主');
+    });
+
+    it('handleDingTalkMessage clears manual learning state with confirm', async () => {
+        const nowMs = Date.now();
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-clear-learning-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '/learn global 汉堡王是麦当劳的孙子', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/learn target-set create 测试组 #@# cid_a,cid_b', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/learn clear all confirm', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_1',
+                msgtype: 'text',
+                text: { content: '/learn global 汉堡王是麦当劳的孙子' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 2_000,
+            },
+        } as any);
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_2',
+                msgtype: 'text',
+                text: { content: '/learn target-set create 测试组 #@# cid_a,cid_b' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 1_000,
+            },
+        } as any);
+
+        shared.sendBySessionMock.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', historyLimit: 50, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_3',
+                msgtype: 'text',
+                text: { content: '/learn clear all confirm' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs,
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已清空学习状态');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('globalRules: 1');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('targetSets: 1');
+    });
+
+    it('skips InboundHistory injection when historyLimit is disabled', async () => {
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-history-off-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '群消息', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', historyLimit: 0, messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_history_off',
+                msgtype: 'text',
+                text: { content: '群消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_history_off',
+                conversationTitle: '群聊B',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: 1700000002000,
+            },
+        } as any);
+
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                InboundHistory: undefined,
             }),
         );
     });

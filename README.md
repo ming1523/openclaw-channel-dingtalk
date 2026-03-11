@@ -48,6 +48,7 @@
 - ✅ **私聊支持** — 直接与机器人对话
 - ✅ **群聊支持** — 在群里 @机器人
 - ✅ **多种消息类型** — 文本、图片、语音（自带识别）、视频、文件、钉钉文档/钉盘文件卡片
+- ✅ **附件文本抽取** — 对常见文本类附件以及 `PDF/DOCX` 自动抽取正文并注入当前会话上下文
 - ✅ **引用消息支持** — 支持恢复大多数引用场景（文字/图片/图文/文件/视频/语音/AI 卡片）；单聊中的钉钉文档依赖权限 **Storage.DownloadInfo.Read**；群聊支持引用群图片、文件/文档（优先命中已持久化索引，未命中时走群文件 API 兜底），其中群文件相关能力需 **ConvFile.Space.Read**、**Storage.File.Read**、**Storage.DownloadInfo.Read**、**Contact.User.Read**，且兜底链路受时间窗口与企业认证限制
 - ✅ **Markdown 回复** — 支持富文本格式回复
 - ✅ **Markdown 表格兼容** — 自动把 Markdown 表格转换为钉钉更稳定的可读文本
@@ -737,8 +738,8 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
 | 图片         | ✅   | 下载并传递给 AI                                                          |
 | 语音         | ✅   | 使用钉钉语音识别结果                                                     |
 | 视频         | ✅   | 下载并传递给 AI                                                          |
-| 文件         | ✅   | 下载并传递给 AI                                                          |
-| 钉钉文档/钉盘文件卡片 | ✅ | 解析 `interactiveCard` 中的 `biz_custom_action_url`，提取 `spaceId/fileId` 后按文件消息下载 |
+| 文件         | ✅   | 下载并传递给 AI；文本类附件会额外抽取正文并注入上下文                   |
+| 钉钉文档/钉盘文件卡片 | ✅ | 解析 `interactiveCard` 中的 `biz_custom_action_url`，提取 `spaceId/fileId` 后按文件消息下载；可对 `PDF/DOCX` 补充正文抽取 |
 | 引用文字     | ✅   | 提取被引用文本作为上下文前缀                                             |
 | 引用图片     | ✅   | 使用引用回调自带的 `downloadCode` 下载并传递给 AI                        |
 | 引用图文     | ✅   | 解析 `richText` 引用内容，提取文本摘要与图片 `downloadCode`              |

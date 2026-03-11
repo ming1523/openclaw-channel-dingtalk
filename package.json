@@ -21,6 +21,7 @@
   "files": [
     "index.ts",
     "src/*.ts",
+    "src/*.d.ts",
     "openclaw.plugin.json",
     "clawbot.plugin.json"
   ],

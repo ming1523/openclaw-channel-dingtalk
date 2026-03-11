@@ -57,6 +57,8 @@ export interface DingTalkConfig extends OpenClawConfig {
   reconnectJitter?: number;
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles?: number;
+  /** Maximum time (ms) for a single reconnect cycle before giving up and starting a new cycle (default: 50000) */
+  reconnectDeadlineMs?: number;
   /** Whether to use ConnectionManager; when false, use DWClient native keepAlive+autoReconnect */
   useConnectionManager?: boolean;
   /** Maximum inbound media file size in MB (overrides runtime default when set) */
@@ -114,6 +116,8 @@ export interface DingTalkChannelConfig {
   reconnectJitter?: number;
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles?: number;
+  /** Maximum time (ms) for a single reconnect cycle before giving up and starting a new cycle (default: 50000) */
+  reconnectDeadlineMs?: number;
   /** Whether to use ConnectionManager; when false, use DWClient native keepAlive+autoReconnect */
   useConnectionManager?: boolean;
   /** Maximum inbound media file size in MB (overrides runtime default when set) */
@@ -564,6 +568,14 @@ export enum ConnectionState {
 }
 
 /**
+ * Factory function that creates a fresh DWClient with callback listeners
+ * already registered. Used by ConnectionManager to create a new client
+ * on reconnection so the new WebSocket can start receiving messages
+ * while the old zombie socket is still being cleaned up.
+ */
+export type StreamClientFactory = () => import("dingtalk-stream").DWClient;
+
+/**
  * Connection manager configuration
  */
 export interface ConnectionManagerConfig {
@@ -573,6 +585,8 @@ export interface ConnectionManagerConfig {
   jitter: number;
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles?: number;
+  /** Maximum time (ms) for a single reconnect cycle before giving up and starting a new cycle (default: 50000) */
+  reconnectDeadlineMs?: number;
   /** Callback invoked when connection state changes */
   onStateChange?: (state: ConnectionState, error?: string) => void;
 }
@@ -659,6 +673,7 @@ export function resolveDingTalkAccount(
       maxReconnectDelay: dingtalk?.maxReconnectDelay,
       reconnectJitter: dingtalk?.reconnectJitter,
       maxReconnectCycles: dingtalk?.maxReconnectCycles,
+      reconnectDeadlineMs: dingtalk?.reconnectDeadlineMs,
       useConnectionManager: dingtalk?.useConnectionManager,
       mediaMaxMb: dingtalk?.mediaMaxMb,
       bypassProxyForSend: dingtalk?.bypassProxyForSend,

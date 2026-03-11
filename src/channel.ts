@@ -49,6 +49,7 @@ import type {
   ConnectionManagerConfig,
   DingTalkChannelPlugin,
   ResolvedAccount,
+  StreamClientFactory,
 } from "./types";
 import { ConnectionState } from "./types";
 import {
@@ -572,177 +573,184 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
 
       const useConnectionManager = config.useConnectionManager ?? true;
 
-      const client = new DWClient({
-        clientId: config.clientId,
-        clientSecret: config.clientSecret,
-        debug: config.debug || false,
-        // keepAlive can be noisy/unstable in some network/proxy environments.
-        // When ConnectionManager is disabled, fall back to native keepAlive unless explicitly overridden.
-        keepAlive: config.keepAlive ?? !useConnectionManager,
-      });
+      // Factory that creates a fresh DWClient with the TOPIC_ROBOT callback
+      // already registered. Each client captures its own reference for
+      // socketCallBackResponse so acks are sent on the correct socket.
+      // ConnectionManager uses this to create new clients during warm
+      // reconnection, minimizing the message-loss window when the DingTalk
+      // server initiates a disconnect for load balancing.
+      const createStreamClient: StreamClientFactory = () => {
+        const c = new DWClient({
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+          debug: config.debug || false,
+          keepAlive: config.keepAlive ?? !useConnectionManager,
+        });
 
-      instrumentConnectionStages(client);
+        instrumentConnectionStages(c);
 
-      (client as any).config.autoReconnect = !useConnectionManager;
+        (c as any).config.autoReconnect = !useConnectionManager;
 
-      client.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
-        const messageId = res.headers?.messageId;
-        const stats = getInboundCounters(account.accountId);
-        stats.received += 1;
-        const acknowledge = () => {
-          if (!messageId) {
-            return;
-          }
-          try {
-            client.socketCallBackResponse(messageId, { success: true });
-            stats.acked += 1;
-          } catch (ackError: any) {
-            ctx.log?.warn?.(
-              `[${account.accountId}] Failed to acknowledge callback ${messageId}: ${ackError.message}`,
-            );
-          }
-        };
-        try {
-          const data = JSON.parse(res.data) as DingTalkInboundMessage;
-
-          // Message deduplication key is bot-scoped to avoid cross-account conflicts.
-          const robotKey = config.robotCode || config.clientId || account.accountId;
-          const msgId = data.msgId || messageId;
-          const dedupKey = msgId ? `${robotKey}:${msgId}` : undefined;
-
-          if (!dedupKey) {
-            ctx.log?.warn?.(`[${account.accountId}] No message ID available for deduplication`);
-            stats.noMessageId += 1;
-            await handleDingTalkMessage({
-              cfg,
-              accountId: account.accountId,
-              data,
-              sessionWebhook: data.sessionWebhook,
-              log: ctx.log,
-              dingtalkConfig: config,
-            });
-            stats.processed += 1;
-            acknowledge();
-            if (stats.received % INBOUND_COUNTER_LOG_EVERY === 0) {
-              logInboundCounters(ctx.log, account.accountId, "periodic");
-            }
-            return;
-          }
-
-          if (isMessageProcessed(dedupKey)) {
-            ctx.log?.debug?.(`[${account.accountId}] Skipping duplicate message: ${dedupKey}`);
-            stats.dedupSkipped += 1;
-            acknowledge();
-            logInboundCounters(ctx.log, account.accountId, "dedup-skipped");
-            return;
-          }
-
-          const inflightSince = processingDedupKeys.get(dedupKey);
-          if (inflightSince !== undefined) {
-            if (Date.now() - inflightSince > INFLIGHT_TTL_MS) {
-              ctx.log?.warn?.(
-                `[${account.accountId}] Releasing stale in-flight lock for ${dedupKey} (held ${Date.now() - inflightSince}ms > TTL ${INFLIGHT_TTL_MS}ms)`,
-              );
-              processingDedupKeys.delete(dedupKey);
-            } else {
-              ctx.log?.debug?.(
-                `[${account.accountId}] Skipping in-flight duplicate message: ${dedupKey}`,
-              );
-              stats.inflightSkipped += 1;
-              // Do not acknowledge in-flight duplicates before the original handler succeeds.
-              // If the original later fails, early-acking the duplicate can suppress server redelivery.
-              logInboundCounters(ctx.log, account.accountId, "inflight-skipped");
+        c.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
+          const messageId = res.headers?.messageId;
+          const stats = getInboundCounters(account.accountId);
+          stats.received += 1;
+          const acknowledge = () => {
+            if (!messageId) {
               return;
             }
-          }
-
-          processingDedupKeys.set(dedupKey, Date.now());
-          try {
-            await handleDingTalkMessage({
-              cfg,
-              accountId: account.accountId,
-              data,
-              sessionWebhook: data.sessionWebhook,
-              log: ctx.log,
-              dingtalkConfig: config,
-            });
-            stats.processed += 1;
-            markMessageProcessed(dedupKey);
-            acknowledge();
-            if (stats.received % INBOUND_COUNTER_LOG_EVERY === 0) {
-              logInboundCounters(ctx.log, account.accountId, "periodic");
-            }
-          } finally {
-            processingDedupKeys.delete(dedupKey);
-          }
-        } catch (error: any) {
-          stats.failed += 1;
-          logInboundCounters(ctx.log, account.accountId, "failed");
-          ctx.log?.error?.(`[${account.accountId}] Error processing message: ${error.message}`);
-        }
-      });
-
-      client.registerCallbackListener(TOPIC_CARD, async (res: any) => {
-        const messageId = res.headers?.messageId;
-        const acknowledge = () => {
-          if (!messageId) {
-            return;
-          }
-          try {
-            client.socketCallBackResponse(messageId, { success: true });
-          } catch (ackError: any) {
-            ctx.log?.warn?.(
-              `[${account.accountId}] Failed to acknowledge card callback ${messageId}: ${ackError.message}`,
-            );
-          }
-        };
-
-        try {
-          const payload = JSON.parse(res.data);
-          const analysis = analyzeCardCallback(payload);
-          ctx.log?.info?.(
-            `[${account.accountId}] [DingTalk][CardCallback] action=${analysis.summary} raw=${JSON.stringify(payload)}`,
-          );
-
-          if (analysis.feedbackTarget && analysis.feedbackAckText) {
-            recordExplicitFeedbackLearning({
-              enabled: isFeedbackLearningEnabled(config),
-              autoApply: isFeedbackLearningAutoApplyEnabled(config),
-              storePath: accountStorePath,
-              accountId: account.accountId,
-              targetId: analysis.feedbackTarget,
-              feedbackType: analysis.actionId === "feedback_up" ? "feedback_up" : "feedback_down",
-              userId: analysis.userId,
-              processQueryKey: analysis.processQueryKey,
-              noteTtlMs: config.learningNoteTtlMs ?? config.feedbackLearningNoteTtlMs,
-            });
             try {
-              await sendProactiveTextOrMarkdown(
-                config,
-                analysis.feedbackTarget,
-                analysis.feedbackAckText,
-                {
-                  accountId: account.accountId,
-                  log: ctx.log,
-                },
-              );
-              ctx.log?.info?.(
-                `[${account.accountId}] [DingTalk][CardCallback] feedback ack sent to ${analysis.feedbackTarget}`,
-              );
-            } catch (sendErr: any) {
+              c.socketCallBackResponse(messageId, { success: true });
+              stats.acked += 1;
+            } catch (ackError: any) {
               ctx.log?.warn?.(
-                `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendErr?.message || String(sendErr)}`,
+                `[${account.accountId}] Failed to acknowledge callback ${messageId}: ${ackError.message}`,
               );
             }
+          };
+          try {
+            const data = JSON.parse(res.data) as DingTalkInboundMessage;
+
+            const robotKey = config.robotCode || config.clientId || account.accountId;
+            const msgId = data.msgId || messageId;
+            const dedupKey = msgId ? `${robotKey}:${msgId}` : undefined;
+
+            if (!dedupKey) {
+              ctx.log?.warn?.(`[${account.accountId}] No message ID available for deduplication`);
+              stats.noMessageId += 1;
+              await handleDingTalkMessage({
+                cfg,
+                accountId: account.accountId,
+                data,
+                sessionWebhook: data.sessionWebhook,
+                log: ctx.log,
+                dingtalkConfig: config,
+              });
+              stats.processed += 1;
+              acknowledge();
+              if (stats.received % INBOUND_COUNTER_LOG_EVERY === 0) {
+                logInboundCounters(ctx.log, account.accountId, "periodic");
+              }
+              return;
+            }
+
+            if (isMessageProcessed(dedupKey)) {
+              ctx.log?.debug?.(`[${account.accountId}] Skipping duplicate message: ${dedupKey}`);
+              stats.dedupSkipped += 1;
+              acknowledge();
+              logInboundCounters(ctx.log, account.accountId, "dedup-skipped");
+              return;
+            }
+
+            const inflightSince = processingDedupKeys.get(dedupKey);
+            if (inflightSince !== undefined) {
+              if (Date.now() - inflightSince > INFLIGHT_TTL_MS) {
+                ctx.log?.warn?.(
+                  `[${account.accountId}] Releasing stale in-flight lock for ${dedupKey} (held ${Date.now() - inflightSince}ms > TTL ${INFLIGHT_TTL_MS}ms)`,
+                );
+                processingDedupKeys.delete(dedupKey);
+              } else {
+                ctx.log?.debug?.(
+                  `[${account.accountId}] Skipping in-flight duplicate message: ${dedupKey}`,
+                );
+                stats.inflightSkipped += 1;
+                logInboundCounters(ctx.log, account.accountId, "inflight-skipped");
+                return;
+              }
+            }
+
+            processingDedupKeys.set(dedupKey, Date.now());
+            try {
+              await handleDingTalkMessage({
+                cfg,
+                accountId: account.accountId,
+                data,
+                sessionWebhook: data.sessionWebhook,
+                log: ctx.log,
+                dingtalkConfig: config,
+              });
+              stats.processed += 1;
+              markMessageProcessed(dedupKey);
+              acknowledge();
+              if (stats.received % INBOUND_COUNTER_LOG_EVERY === 0) {
+                logInboundCounters(ctx.log, account.accountId, "periodic");
+              }
+            } finally {
+              processingDedupKeys.delete(dedupKey);
+            }
+          } catch (error: any) {
+            stats.failed += 1;
+            logInboundCounters(ctx.log, account.accountId, "failed");
+            ctx.log?.error?.(`[${account.accountId}] Error processing message: ${error.message}`);
           }
-        } catch (error: any) {
-          ctx.log?.error?.(
-            `[${account.accountId}] [DingTalk][CardCallback] Failed to parse callback: ${error.message}`,
-          );
-        } finally {
-          acknowledge();
-        }
-      });
+        });
+
+        c.registerCallbackListener(TOPIC_CARD, async (res: any) => {
+          const messageId = res.headers?.messageId;
+          const acknowledge = () => {
+            if (!messageId) {
+              return;
+            }
+            try {
+              c.socketCallBackResponse(messageId, { success: true });
+            } catch (ackError: any) {
+              ctx.log?.warn?.(
+                `[${account.accountId}] Failed to acknowledge card callback ${messageId}: ${ackError.message}`,
+              );
+            }
+          };
+
+          try {
+            const payload = JSON.parse(res.data);
+            const analysis = analyzeCardCallback(payload);
+            ctx.log?.info?.(
+              `[${account.accountId}] [DingTalk][CardCallback] action=${analysis.summary} raw=${JSON.stringify(payload)}`,
+            );
+
+            if (analysis.feedbackTarget && analysis.feedbackAckText) {
+              recordExplicitFeedbackLearning({
+                enabled: isFeedbackLearningEnabled(config),
+                autoApply: isFeedbackLearningAutoApplyEnabled(config),
+                storePath: accountStorePath,
+                accountId: account.accountId,
+                targetId: analysis.feedbackTarget,
+                feedbackType: analysis.actionId === "feedback_up" ? "feedback_up" : "feedback_down",
+                userId: analysis.userId,
+                processQueryKey: analysis.processQueryKey,
+                noteTtlMs: config.learningNoteTtlMs ?? config.feedbackLearningNoteTtlMs,
+              });
+              try {
+                await sendProactiveTextOrMarkdown(
+                  config,
+                  analysis.feedbackTarget,
+                  analysis.feedbackAckText,
+                  {
+                    accountId: account.accountId,
+                    log: ctx.log,
+                  },
+                );
+                ctx.log?.info?.(
+                  `[${account.accountId}] [DingTalk][CardCallback] feedback ack sent to ${analysis.feedbackTarget}`,
+                );
+              } catch (sendErr: any) {
+                ctx.log?.warn?.(
+                  `[${account.accountId}] [DingTalk][CardCallback] Failed to send feedback ack: ${sendErr?.message || String(sendErr)}`,
+                );
+              }
+            }
+          } catch (error: any) {
+            ctx.log?.error?.(
+              `[${account.accountId}] [DingTalk][CardCallback] Failed to parse callback: ${error.message}`,
+            );
+          } finally {
+            acknowledge();
+          }
+        });
+
+        return c;
+      };
+
+      const client = createStreamClient();
 
       // Guard against duplicate stop paths (abort signal + explicit stop).
       let stopped = false;
@@ -859,6 +867,7 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         maxDelay: config.maxReconnectDelay ?? 60000,
         jitter: config.reconnectJitter ?? 0.3,
         maxReconnectCycles: config.maxReconnectCycles,
+        reconnectDeadlineMs: config.reconnectDeadlineMs,
         onStateChange: (state: ConnectionState, error?: string) => {
           if (stopped) {
             return;
@@ -910,6 +919,7 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         account.accountId,
         connectionConfig,
         ctx.log,
+        createStreamClient,
       );
 
       try {

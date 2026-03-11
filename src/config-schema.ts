@@ -84,6 +84,9 @@ const DingTalkAccountConfigShape = {
   /** Maximum number of runtime reconnect cycles before giving up (default: 10) */
   maxReconnectCycles: z.number().int().min(1).optional().default(10),
 
+  /** Maximum time (ms) for a single reconnect cycle before starting a new cycle (default: 50000) */
+  reconnectDeadlineMs: z.number().int().min(5000).optional().default(50000),
+
   /** Whether to use ConnectionManager (default: true). When false, rely on DWClient native keepAlive+autoReconnect. */
   useConnectionManager: z.boolean().optional().default(true),
 

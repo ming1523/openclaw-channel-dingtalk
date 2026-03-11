@@ -15,9 +15,20 @@ import type {
   ConnectionManagerConfig,
   ConnectionAttemptResult,
   Logger,
+  StreamClientFactory,
 } from "./types";
 import { ConnectionState as ConnectionStateEnum } from "./types";
-import { formatDingTalkConnectionErrorLog } from "./utils";
+
+/**
+ * Thrown when a runtime reconnection cycle exceeds the configured deadline.
+ * Identified via instanceof in reconnect() to skip cycle counting.
+ */
+export class ReconnectDeadlineError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("Reconnect deadline exceeded", options);
+    this.name = "ReconnectDeadlineError";
+  }
+}
 
 /**
  * ConnectionManager handles the robust connection lifecycle for DWClient
@@ -39,15 +50,25 @@ export class ConnectionManager {
   private static readonly HEALTH_CHECK_GRACE_MS = 3000;
   private static readonly HEALTH_CHECK_UNHEALTHY_THRESHOLD = 2;
   private static readonly DEFAULT_MAX_RECONNECT_CYCLES = 10;
-  // Absolute threshold for hibernation detection; intentionally decoupled from
-  // HEALTH_CHECK_INTERVAL_MS. A system is considered hibernated if the interval
-  // between consecutive health checks exceeds this value (timer skew after wake-up).
-  private static readonly SLEEP_DETECTION_THRESHOLD_MS = 30000; // 30 seconds
-  private lastHealthCheckAt?: number; // Track last health check time for sleep detection
+  private static readonly MAX_CYCLE_BACKOFF_MS = 5000;
+  private static readonly MAX_CONSECUTIVE_DEADLINE_TIMEOUTS = 5;
+  // If no application-level WebSocket frames (CALLBACK, SYSTEM/ping,
+  // SYSTEM/KEEPALIVE, etc.) arrive within this window, the connection is
+  // likely a zombie where the server silently stopped routing.  Protocol-
+  // level pong frames are NOT tracked (they bypass the "message" event),
+  // so this specifically detects the scenario where TCP is alive but the
+  // server no longer delivers any messages.  DingTalk servers typically
+  // send keepalive/ping every ~20-30s, so 60s means ≥2 missed keepalives.
+  private static readonly SOCKET_IDLE_TIMEOUT_MS = 60_000;
   private runtimeReconnectCycles: number = 0;
+  private reconnectDeadline?: number;
+  private consecutiveDeadlineTimeouts: number = 0;
+  private lastSocketActivityAt?: number;
   private runtimeCounters = {
     healthUnhealthyChecks: 0,
     healthTriggeredReconnects: 0,
+    serverDisconnectMessages: 0,
+    socketIdleReconnects: 0,
     socketCloseEvents: 0,
     runtimeDisconnects: 0,
     reconnectAttempts: 0,
@@ -59,7 +80,8 @@ export class ConnectionManager {
   private healthCheckInterval?: NodeJS.Timeout;
   private socketCloseHandler?: (code: number, reason: string) => void;
   private socketErrorHandler?: (error: Error) => void;
-  private monitoredSocket?: any; // Store the socket instance we attached listeners to
+  private socketMessageHandler?: (data: any) => void;
+  private monitoredSocket?: any;
 
   // Sleep abort control
   private sleepTimeout?: NodeJS.Timeout;
@@ -71,11 +93,18 @@ export class ConnectionManager {
   // Client reference
   private client: DWClient;
 
-  constructor(client: DWClient, accountId: string, config: ConnectionManagerConfig, log?: Logger) {
+  // Warm-reconnect: factory to create fresh DWClient instances with listeners
+  // already registered so the new socket starts receiving immediately.
+  private clientFactory?: StreamClientFactory;
+  // Old client pending cleanup after a warm reconnect swap.
+  private pendingOldClient?: DWClient;
+
+  constructor(client: DWClient, accountId: string, config: ConnectionManagerConfig, log?: Logger, clientFactory?: StreamClientFactory) {
     this.client = client;
     this.accountId = accountId;
     this.config = config;
     this.log = log;
+    this.clientFactory = clientFactory;
   }
 
   private notifyStateChange(error?: string): void {
@@ -87,7 +116,7 @@ export class ConnectionManager {
   private logRuntimeCounters(reason: string): void {
     const c = this.runtimeCounters;
     this.log?.info?.(
-      `[${this.accountId}] Runtime counters (${reason}): healthUnhealthyChecks=${c.healthUnhealthyChecks}, healthTriggeredReconnects=${c.healthTriggeredReconnects}, socketCloseEvents=${c.socketCloseEvents}, runtimeDisconnects=${c.runtimeDisconnects}, reconnectAttempts=${c.reconnectAttempts}, reconnectSuccess=${c.reconnectSuccess}, reconnectFailures=${c.reconnectFailures}`,
+      `[${this.accountId}] Runtime counters (${reason}): healthUnhealthyChecks=${c.healthUnhealthyChecks}, healthTriggeredReconnects=${c.healthTriggeredReconnects}, serverDisconnectMessages=${c.serverDisconnectMessages}, socketIdleReconnects=${c.socketIdleReconnects}, socketCloseEvents=${c.socketCloseEvents}, runtimeDisconnects=${c.runtimeDisconnects}, reconnectAttempts=${c.reconnectAttempts}, reconnectSuccess=${c.reconnectSuccess}, reconnectFailures=${c.reconnectFailures}`,
     );
   }
 
@@ -135,24 +164,89 @@ export class ConnectionManager {
     );
 
     try {
-      // Ensure previous connection resources (heartbeat timers, old sockets) are
-      // fully cleaned up before establishing a new connection.  The DWClient
-      // _connect() method does not clear its internal heartbeat interval, so a
-      // stale timer from a prior session can terminate the newly created socket
-      // before it finishes the handshake (manifests as code-1006 / "WebSocket was
-      // closed before the connection was established").
-      try {
-        this.client.disconnect();
-      } catch (disconnectErr: any) {
-        this.log?.debug?.(
-          `[${this.accountId}] pre-connect cleanup disconnect failed: ${disconnectErr.message}`,
-        );
+      // Warm-reconnect path: create a fresh DWClient so the new WebSocket
+      // can start receiving messages while the old zombie socket is cleaned
+      // up asynchronously. This minimizes the message-loss window during
+      // server-initiated disconnects (DingTalk robot msgs are fire-and-forget).
+      if (this.clientFactory) {
+        const oldClient = this.client;
+        this.pendingOldClient = oldClient;
+        try {
+          this.client = this.clientFactory();
+          this.log?.info?.(
+            `[${this.accountId}] Warm reconnect: created fresh DWClient, connecting new socket while old socket is cleaned up`,
+          );
+        } catch (factoryErr: any) {
+          this.log?.warn?.(
+            `[${this.accountId}] Client factory failed, falling back to same-client reconnect: ${factoryErr.message}`,
+          );
+          this.client = oldClient;
+          this.pendingOldClient = undefined;
+        }
+      }
+
+      if (!this.pendingOldClient) {
+        // Legacy single-client reconnect: disconnect before reconnecting.
+        try {
+          this.client.disconnect();
+        } catch (disconnectErr: any) {
+          this.log?.debug?.(
+            `[${this.accountId}] pre-connect cleanup disconnect failed: ${disconnectErr.message}`,
+          );
+        }
+      }
+
+      // SDK _connect() resolves before socket "open" fires. If disconnect() runs
+      // before "open", heartbeatIntervallId is still undefined and clearInterval
+      // is a no-op. The deferred "open" handler then creates an interval that
+      // outlives the old socket and can terminate the next connection.
+      // For the race where interval is created AFTER this cleanup, the socket
+      // open timeout below serves as the final safety net.
+      // Field name "heartbeatIntervallId" (double-l typo) from dingtalk-stream
+      // SDK DWClient._connect() open handler (verified in SDK v1.x).
+      const clientAny = this.client as any;
+      if (clientAny.heartbeatIntervallId !== undefined) {
+        clearInterval(clientAny.heartbeatIntervallId);
+        clientAny.heartbeatIntervallId = undefined;
       }
 
       await this.client.connect();
 
-      // Re-check stopped flag after async connect() completes
-      // This prevents race condition where stop() is called during connection
+      // Wait for socket to actually open before declaring CONNECTED.
+      // SDK _connect() resolves immediately without waiting for the "open" event,
+      // so client.connected is almost certainly false at this point.
+      if (clientAny.socket && !clientAny.connected) {
+        const defaultOpenTimeout = 10_000;
+        const openTimeout = this.reconnectDeadline !== undefined
+          ? Math.min(defaultOpenTimeout, Math.max(1000, this.reconnectDeadline - Date.now()))
+          : defaultOpenTimeout;
+
+        await new Promise<void>((resolve, reject) => {
+          const socket = clientAny.socket;
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Socket open timeout"));
+          }, openTimeout);
+          if (socket.readyState === 1) {
+            clearTimeout(timeout);
+            resolve();
+            return;
+          }
+          const cleanup = () => {
+            clearTimeout(timeout);
+            socket.removeListener("open", onOpen);
+            socket.removeListener("error", onError);
+            socket.removeListener("close", onClose);
+          };
+          const onOpen = () => { cleanup(); resolve(); };
+          const onError = (err: Error) => { cleanup(); reject(err); };
+          const onClose = () => { cleanup(); reject(new Error("Socket closed before open")); };
+          socket.once("open", onOpen);
+          socket.once("error", onError);
+          socket.once("close", onClose);
+        });
+      }
+
       if (this.stopped) {
         this.log?.warn?.(
           `[${this.accountId}] Connection succeeded but manager was stopped during connect - disconnecting`,
@@ -171,27 +265,41 @@ export class ConnectionManager {
         };
       }
 
-      // Connection successful
       this.state = ConnectionStateEnum.CONNECTED;
       this.connectedAt = Date.now();
+      this.lastSocketActivityAt = Date.now();
+      this.reconnectDeadline = undefined;
       this.consecutiveUnhealthyChecks = 0;
       this.notifyStateChange();
       const successfulAttempt = this.attemptCount;
-      this.attemptCount = 0; // Reset counter on success
+      this.attemptCount = 0;
 
       this.log?.info?.(`[${this.accountId}] DingTalk Stream client connected successfully`);
 
-      // Reset runtime reconnect cycle counter on successful connection
       this.runtimeReconnectCycles = 0;
+      this.consecutiveDeadlineTimeouts = 0;
+      // Setup monitoring BEFORE cleaning up old client: setupRuntimeReconnection
+      // calls cleanupRuntimeMonitoring() which removes the old socket's event
+      // listeners, preventing the old socket's close event (triggered by
+      // disconnect below) from erroneously firing handleRuntimeDisconnection.
+      this.setupRuntimeReconnection();
+      this.cleanupPendingOldClient();
 
       return { success: true, attempt: successfulAttempt };
     } catch (err: any) {
+      // Warm-reconnect failed with new client: revert to old client so
+      // subsequent retry attempts don't keep creating throwaway instances.
+      if (this.pendingOldClient) {
+        try { this.client.disconnect(); } catch { /* best-effort cleanup of failed new client */ }
+        this.client = this.pendingOldClient;
+        this.pendingOldClient = undefined;
+        this.log?.debug?.(
+          `[${this.accountId}] Warm reconnect failed, reverted to previous client for next retry`,
+        );
+      }
+
       this.log?.error?.(
-        formatDingTalkConnectionErrorLog(
-          "connect.open",
-          err,
-          `[${this.accountId}] Connection attempt ${this.attemptCount} failed: ${err.message}`,
-        ) ?? `[${this.accountId}] Connection attempt ${this.attemptCount} failed: ${err.message}`,
+        `[${this.accountId}] Connection attempt ${this.attemptCount} failed: ${err.message}`,
       );
 
       // Check if we've exceeded max attempts
@@ -231,17 +339,18 @@ export class ConnectionManager {
       `[${this.accountId}] Starting DingTalk Stream client with robust connection...`,
     );
 
-    // Keep trying until success or max attempts reached
     while (!this.stopped && this.state !== ConnectionStateEnum.CONNECTED) {
+      if (this.reconnectDeadline !== undefined && Date.now() >= this.reconnectDeadline) {
+        this.reconnectDeadline = undefined;
+        throw new ReconnectDeadlineError();
+      }
+
       const result = await this.attemptConnection();
 
       if (result.success) {
-        // Connection successful
-        this.setupRuntimeReconnection();
         return;
       }
 
-      // Check if connection was stopped during connect
       if (result.error?.message === "Connection manager stopped during connect") {
         this.log?.info?.(
           `[${this.accountId}] Connection cancelled: manager stopped during connect`,
@@ -250,12 +359,17 @@ export class ConnectionManager {
       }
 
       if (!result.nextDelay || this.attemptCount >= this.config.maxAttempts) {
-        // No more retries
         throw new Error(`Failed to connect after ${this.attemptCount} attempts`);
       }
 
-      // Wait before next attempt
-      await this.sleep(result.nextDelay);
+      // Truncate sleep to remaining deadline budget
+      let actualDelay = result.nextDelay;
+      if (this.reconnectDeadline !== undefined) {
+        const remaining = Math.max(0, this.reconnectDeadline - Date.now());
+        actualDelay = Math.min(actualDelay, remaining);
+      }
+
+      await this.sleep(actualDelay);
     }
   }
 
@@ -268,9 +382,6 @@ export class ConnectionManager {
 
     // Clean up any existing monitoring resources before setting up new ones
     this.cleanupRuntimeMonitoring();
-
-    // Initialize last health check time for sleep detection
-    this.lastHealthCheckAt = Date.now();
 
     // Access DWClient internals to monitor connection state
     const client = this.client as any;
@@ -287,34 +398,10 @@ export class ConnectionManager {
 
       if (this.state !== ConnectionStateEnum.CONNECTED) {
         this.consecutiveUnhealthyChecks = 0;
-        this.lastHealthCheckAt = Date.now();
         return;
       }
 
       const now = Date.now();
-
-      // **Sleep/Hibernate Detection**: If time since last health check exceeds threshold,
-      // the system likely slept. WebSocket connection is almost certainly dead even if
-      // socket.readyState still shows OPEN (stale state after wake).
-      if (this.lastHealthCheckAt !== undefined) {
-        const timeSinceLastCheck = now - this.lastHealthCheckAt;
-        if (timeSinceLastCheck > ConnectionManager.SLEEP_DETECTION_THRESHOLD_MS) {
-          this.log?.warn?.(
-            `[${this.accountId}] System sleep/hibernate detected! ` +
-              `Time since last health check: ${(timeSinceLastCheck / 1000).toFixed(1)}s ` +
-              `(threshold: ${ConnectionManager.SLEEP_DETECTION_THRESHOLD_MS / 1000}s). ` +
-              `Forcing reconnection as WebSocket is likely stale.`,
-          );
-          if (this.healthCheckInterval) {
-            clearInterval(this.healthCheckInterval);
-          }
-          this.lastHealthCheckAt = undefined;
-          this.handleRuntimeDisconnection();
-          return;
-        }
-      }
-      this.lastHealthCheckAt = now;
-
       const withinGraceWindow =
         this.connectedAt !== undefined &&
         now - this.connectedAt < ConnectionManager.HEALTH_CHECK_GRACE_MS;
@@ -325,7 +412,43 @@ export class ConnectionManager {
 
       const socketReadyState = (client.socket as { readyState?: number } | undefined)?.readyState;
       const socketOpen = socketReadyState === 1;
-      const unhealthy = !client.connected && !socketOpen;
+      const registered = client.registered as boolean | undefined;
+
+      // Socket idle detection: if the WebSocket hasn't received ANY frame
+      // (including SDK heartbeat replies) for SOCKET_IDLE_TIMEOUT_MS, the
+      // server likely stopped routing to this connection without sending a
+      // disconnect message. This catches the "phantom healthy" zombie state
+      // where connected=true and socket is open but nothing is delivered.
+      const idleMs = this.lastSocketActivityAt !== undefined
+        ? now - this.lastSocketActivityAt
+        : undefined;
+      const socketIdle = idleMs !== undefined && idleMs >= ConnectionManager.SOCKET_IDLE_TIMEOUT_MS;
+
+      if (socketIdle) {
+        this.log?.warn?.(
+          `[${this.accountId}] Socket idle for ${(idleMs / 1000).toFixed(1)}s (threshold ${ConnectionManager.SOCKET_IDLE_TIMEOUT_MS / 1000}s), treating as zombie connection`,
+        );
+        this.runtimeCounters.socketIdleReconnects += 1;
+        this.logRuntimeCounters("socket-idle-reconnect");
+        if (this.healthCheckInterval) {
+          clearInterval(this.healthCheckInterval);
+        }
+        this.handleRuntimeDisconnection();
+        return;
+      }
+
+      // Unhealthy if:
+      // 1. Not connected AND socket not open (full disconnect)
+      // 2. Socket is open, client.connected is false, AND not registered
+      //    (zombie connection — server sent logical "disconnect" system message,
+      //    SDK set connected=false + registered=false but socket remains open,
+      //    ping/pong still works but no messages are routed).
+      //    The !client.connected guard is essential: some DingTalk server
+      //    configurations never send the REGISTERED system message, so
+      //    registered stays false even on a healthy connection.
+      const unhealthy =
+        (!client.connected && !socketOpen) ||
+        (socketOpen && !client.connected && registered === false);
 
       if (!unhealthy) {
         this.consecutiveUnhealthyChecks = 0;
@@ -339,7 +462,7 @@ export class ConnectionManager {
         ConnectionManager.HEALTH_CHECK_UNHEALTHY_THRESHOLD
       ) {
         this.log?.debug?.(
-          `[${this.accountId}] Connection health check unhealthy (${this.consecutiveUnhealthyChecks}/${ConnectionManager.HEALTH_CHECK_UNHEALTHY_THRESHOLD}) connected=${String(client.connected)} socketReadyState=${socketReadyState ?? "unknown"}`,
+          `[${this.accountId}] Connection health check unhealthy (${this.consecutiveUnhealthyChecks}/${ConnectionManager.HEALTH_CHECK_UNHEALTHY_THRESHOLD}) connected=${String(client.connected)} registered=${String(registered)} socketReadyState=${socketReadyState ?? "unknown"}`,
         );
         return;
       }
@@ -386,11 +509,62 @@ export class ConnectionManager {
         );
       };
 
-      // Listen to socket events
-      // Use 'once' for close to avoid duplicate reconnection triggers
       socket.once("close", this.socketCloseHandler);
-      // Use 'once' for error as well to prevent accumulation across reconnects
       socket.once("error", this.socketErrorHandler);
+
+      // Monitor for server-side disconnect system messages. The DingTalk server
+      // sends a disconnect message before severing the logical session (for load
+      // balancing). After disconnect, the server immediately stops routing
+      // messages to this connection, but the TCP socket stays open for ~10s.
+      // Robot messages are fire-and-forget (no server retry), so every second
+      // of delay means lost messages. Detecting disconnect here lets us start
+      // reconnecting immediately instead of waiting for the health check or
+      // the eventual TCP close.
+      this.socketMessageHandler = (data: any) => {
+        this.lastSocketActivityAt = Date.now();
+        try {
+          const msg = JSON.parse(typeof data === "string" ? data : data.toString());
+          if (msg?.type === "SYSTEM" && msg?.headers?.topic === "disconnect") {
+            this.runtimeCounters.serverDisconnectMessages += 1;
+            this.log?.warn?.(
+              `[${this.accountId}] Server disconnect system message received, triggering immediate reconnection`,
+            );
+            this.logRuntimeCounters("server-disconnect");
+            if (this.healthCheckInterval) {
+              clearInterval(this.healthCheckInterval);
+            }
+            this.handleRuntimeDisconnection();
+          }
+        } catch {
+          // Ignore parse errors — other handlers will process the message
+        }
+      };
+      socket.on("message", this.socketMessageHandler);
+    }
+  }
+
+  /**
+   * Disconnect and release the old client left over from a warm-reconnect swap.
+   */
+  private cleanupPendingOldClient(): void {
+    if (!this.pendingOldClient) {
+      return;
+    }
+    const old = this.pendingOldClient;
+    this.pendingOldClient = undefined;
+    try {
+      // Clear stale heartbeat interval from old SDK instance.
+      const oldAny = old as any;
+      if (oldAny.heartbeatIntervallId !== undefined) {
+        clearInterval(oldAny.heartbeatIntervallId);
+        oldAny.heartbeatIntervallId = undefined;
+      }
+      old.disconnect();
+      this.log?.debug?.(`[${this.accountId}] Warm reconnect: old client disconnected`);
+    } catch (err: any) {
+      this.log?.debug?.(
+        `[${this.accountId}] Warm reconnect: old client cleanup failed: ${err.message}`,
+      );
     }
   }
 
@@ -405,9 +579,6 @@ export class ConnectionManager {
       this.log?.debug?.(`[${this.accountId}] Health check interval cleared`);
     }
 
-    // Reset sleep detection state
-    this.lastHealthCheckAt = undefined;
-
     // Remove socket event listeners from the stored socket instance
     if (this.monitoredSocket) {
       const socket = this.monitoredSocket;
@@ -420,6 +591,10 @@ export class ConnectionManager {
         socket.removeListener("error", this.socketErrorHandler);
         this.socketErrorHandler = undefined;
       }
+      if (this.socketMessageHandler) {
+        socket.removeListener("message", this.socketMessageHandler);
+        this.socketMessageHandler = undefined;
+      }
 
       this.log?.debug?.(`[${this.accountId}] Socket event listeners removed from monitored socket`);
       this.monitoredSocket = undefined;
@@ -430,35 +605,35 @@ export class ConnectionManager {
    * Handle runtime disconnection and trigger reconnection
    */
   private handleRuntimeDisconnection(): void {
-    if (this.stopped) {
+    if (this.stopped || this.state !== ConnectionStateEnum.CONNECTED) {
       return;
     }
+
+    this.state = ConnectionStateEnum.DISCONNECTED;
 
     this.log?.warn?.(
       `[${this.accountId}] Runtime disconnection detected, initiating reconnection...`,
     );
     this.runtimeCounters.runtimeDisconnects += 1;
 
-    this.state = ConnectionStateEnum.DISCONNECTED;
     this.notifyStateChange("Runtime disconnection detected");
-    this.attemptCount = 0; // Reset attempt counter for runtime reconnection
+    this.attemptCount = 0;
     this.connectedAt = undefined;
+    this.lastSocketActivityAt = undefined;
     this.consecutiveUnhealthyChecks = 0;
 
-    // Clear any existing timer
+    const deadlineMs = this.config.reconnectDeadlineMs ?? 50000;
+    this.reconnectDeadline = Date.now() + deadlineMs;
+
     this.clearReconnectTimer();
 
-    // Start reconnection with initial delay
-    const delay = this.calculateNextDelay(0);
-    this.log?.info?.(
-      `[${this.accountId}] Scheduling reconnection in ${(delay / 1000).toFixed(2)}s`,
-    );
+    this.log?.info?.(`[${this.accountId}] Scheduling immediate reconnection`);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnect().catch((err) => {
         this.log?.error?.(`[${this.accountId}] Reconnection failed: ${err.message}`);
       });
-    }, delay);
+    }, 0);
   }
 
   /**
@@ -486,7 +661,40 @@ export class ConnectionManager {
       this.runtimeCounters.reconnectFailures += 1;
       this.logRuntimeCounters("reconnect-failed");
 
-      // Track runtime reconnect cycles to prevent infinite loops
+      if (err instanceof ReconnectDeadlineError) {
+        this.consecutiveDeadlineTimeouts += 1;
+
+        if (this.consecutiveDeadlineTimeouts >= ConnectionManager.MAX_CONSECUTIVE_DEADLINE_TIMEOUTS) {
+          this.log?.error?.(
+            `[${this.accountId}] Max consecutive deadline timeouts (${ConnectionManager.MAX_CONSECUTIVE_DEADLINE_TIMEOUTS}) reached. Giving up.`,
+          );
+          this.state = ConnectionStateEnum.FAILED;
+          this.connectedAt = undefined;
+          this.consecutiveUnhealthyChecks = 0;
+          this.reconnectDeadline = undefined;
+          this.notifyStateChange(
+            `Max consecutive deadline timeouts (${ConnectionManager.MAX_CONSECUTIVE_DEADLINE_TIMEOUTS}) reached`,
+          );
+          return;
+        }
+
+        const deadlineMs = this.config.reconnectDeadlineMs ?? 50000;
+        this.reconnectDeadline = Date.now() + deadlineMs;
+        const delay = Math.min(
+          this.calculateNextDelay(0),
+          ConnectionManager.MAX_CYCLE_BACKOFF_MS,
+        );
+        this.attemptCount = 0;
+        this.clearReconnectTimer();
+        this.log?.warn?.(
+          `[${this.accountId}] Reconnect deadline exceeded (${this.consecutiveDeadlineTimeouts}/${ConnectionManager.MAX_CONSECUTIVE_DEADLINE_TIMEOUTS}); scheduling next cycle in ${(delay / 1000).toFixed(2)}s`,
+        );
+        this.reconnectTimer = setTimeout(() => {
+          void this.reconnect();
+        }, delay);
+        return;
+      }
+
       this.runtimeReconnectCycles += 1;
       const maxCycles = this.config.maxReconnectCycles ?? ConnectionManager.DEFAULT_MAX_RECONNECT_CYCLES;
 
@@ -498,6 +706,7 @@ export class ConnectionManager {
         this.state = ConnectionStateEnum.FAILED;
         this.connectedAt = undefined;
         this.consecutiveUnhealthyChecks = 0;
+        this.reconnectDeadline = undefined;
         this.notifyStateChange(`Max runtime reconnect cycles (${maxCycles}) reached`);
         return;
       }
@@ -507,8 +716,11 @@ export class ConnectionManager {
       this.consecutiveUnhealthyChecks = 0;
       this.notifyStateChange(err.message);
 
-      // Continue runtime recovery with exponential backoff based on cycle count
-      const delay = this.calculateNextDelay(Math.min(this.runtimeReconnectCycles - 1, 6)); // Cap at ~64x initial delay
+      const rawDelay = this.calculateNextDelay(Math.min(this.runtimeReconnectCycles - 1, 6));
+      const delay = Math.min(rawDelay, ConnectionManager.MAX_CYCLE_BACKOFF_MS);
+      // Each cycle gets its own deadline so long-running retries don't block indefinitely
+      const deadlineMs = this.config.reconnectDeadlineMs ?? 50000;
+      this.reconnectDeadline = Date.now() + deadlineMs;
       this.attemptCount = 0;
       this.clearReconnectTimer();
       this.log?.warn?.(
@@ -533,6 +745,8 @@ export class ConnectionManager {
     this.stopped = true;
     this.state = ConnectionStateEnum.DISCONNECTING;
     this.connectedAt = undefined;
+    this.reconnectDeadline = undefined;
+    this.consecutiveDeadlineTimeouts = 0;
     this.consecutiveUnhealthyChecks = 0;
 
     // Clear reconnect timer
@@ -543,6 +757,9 @@ export class ConnectionManager {
 
     // Clean up runtime monitoring resources
     this.cleanupRuntimeMonitoring();
+
+    // Clean up any pending old client from warm-reconnect swap.
+    this.cleanupPendingOldClient();
 
     // Disconnect client
     try {

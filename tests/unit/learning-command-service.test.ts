@@ -9,4 +9,14 @@ describe("learning-command-service", () => {
       instruction: "引用规则",
     });
   });
+
+  it("parses destructive clear command only with confirm", () => {
+    expect(parseLearnCommand("/learn clear all confirm")).toEqual({
+      scope: "clear",
+      clearScope: "all",
+    });
+    expect(parseLearnCommand("/learn clear all")).toEqual({
+      scope: "unknown",
+    });
+  });
 });

@@ -14,6 +14,7 @@ import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
   formatLearnAppliedReply,
+  formatLearnClearedReply,
   formatLearnCommandHelp,
   formatLearnDeletedReply,
   formatLearnDisabledReply,
@@ -47,6 +48,7 @@ import {
   applyManualSessionLearningNote,
   applyTargetSetLearningRule,
   buildLearningContextBlock,
+  clearAllManualLearningState,
   createOrUpdateTargetSet,
   deleteManualRule,
   disableManualRule,
@@ -421,6 +423,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       || parsedLearnCommand.scope === "list"
       || parsedLearnCommand.scope === "disable"
       || parsedLearnCommand.scope === "delete"
+      || parsedLearnCommand.scope === "clear"
       || parsedLearnCommand.scope === "target-set-create"
       || parsedLearnCommand.scope === "target-set-apply")
     && !isOwner
@@ -620,6 +623,26 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           existed: result.existed,
           scope: result.scope,
           targetId: result.targetId,
+        }),
+        { log },
+      );
+      return;
+    }
+    if (parsedLearnCommand.scope === "clear" && parsedLearnCommand.clearScope === "all") {
+      const result = clearAllManualLearningState({
+        storePath: accountStorePath,
+        accountId,
+      });
+      await sendBySession(
+        dingtalkConfig,
+        sessionWebhook,
+        formatLearnClearedReply({
+          scope: "all",
+          globalRules: result.globalRules,
+          targetRules: result.targetRules,
+          targetSets: result.targetSets,
+          sessionNotes: result.sessionNotes,
+          feedbackArtifacts: result.feedbackArtifacts,
         }),
         { log },
       );

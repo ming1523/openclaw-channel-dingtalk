@@ -14,6 +14,7 @@ const SESSION_NOTES_NAMESPACE = "feedback.session-notes";
 const LEARNED_RULES_NAMESPACE = "feedback.learned-rules";
 const TARGET_RULES_NAMESPACE = "feedback.target-rules";
 const TARGET_RULE_INDEX_NAMESPACE = "feedback.target-rules-index";
+const TARGET_ACTIVITY_INDEX_NAMESPACE = "feedback.target-activity-index";
 const TARGET_SETS_NAMESPACE = "feedback.target-sets";
 
 export type FeedbackKind = "explicit_positive" | "explicit_negative" | "implicit_negative";
@@ -98,6 +99,11 @@ interface TargetRuleIndexBucket {
   targetIds: string[];
 }
 
+interface TargetActivityIndexBucket {
+  updatedAt: number;
+  targetIds: string[];
+}
+
 export interface TargetSetRecord {
   name: string;
   targetIds: string[];
@@ -151,12 +157,26 @@ function writeListBucket<T>(
   });
 }
 
+function clearListBucket(
+  namespace: string,
+  params: { storePath?: string; accountId: string; targetId: string },
+): number {
+  if (!params.storePath) {
+    return 0;
+  }
+  const existing = readListBucket<unknown>(namespace, params);
+  const cleared = existing.entries.length;
+  writeListBucket(namespace, { ...params, entries: [] });
+  return cleared;
+}
+
 export function appendFeedbackEvent(
   params: { storePath?: string; accountId: string; targetId: string; event: FeedbackEventRecord },
 ): void {
   const bucket = readListBucket<FeedbackEventRecord>(EVENTS_NAMESPACE, params);
   bucket.entries = trimNewest([...bucket.entries, params.event], MAX_EVENTS);
   writeListBucket(EVENTS_NAMESPACE, { ...params, entries: bucket.entries });
+  touchTargetActivityIndex(params);
 }
 
 export function listFeedbackEvents(
@@ -171,6 +191,7 @@ export function appendOutboundReplySnapshot(
   const bucket = readListBucket<OutboundReplySnapshot>(SNAPSHOTS_NAMESPACE, params);
   bucket.entries = trimNewest([...bucket.entries, params.snapshot], MAX_SNAPSHOTS);
   writeListBucket(SNAPSHOTS_NAMESPACE, { ...params, entries: bucket.entries });
+  touchTargetActivityIndex(params);
 }
 
 export function listOutboundReplySnapshots(
@@ -185,6 +206,7 @@ export function appendReflectionRecord(
   const bucket = readListBucket<ReflectionRecord>(REFLECTIONS_NAMESPACE, params);
   bucket.entries = trimNewest([...bucket.entries, params.reflection], MAX_REFLECTIONS);
   writeListBucket(REFLECTIONS_NAMESPACE, { ...params, entries: bucket.entries });
+  touchTargetActivityIndex(params);
 }
 
 export function listReflectionRecords(
@@ -214,6 +236,7 @@ export function appendSessionLearningNote(
     ...params,
     entries: trimNewest(retained, MAX_SESSION_NOTES),
   });
+  touchTargetActivityIndex(params);
 }
 
 export function listActiveSessionLearningNotes(
@@ -351,6 +374,48 @@ function writeTargetRuleIndex(
       updatedAt: Date.now(),
       targetIds: [...new Set(params.targetIds.filter((targetId) => targetId.trim()))],
     } satisfies TargetRuleIndexBucket,
+  });
+}
+
+function readTargetActivityIndex(
+  params: { storePath?: string; accountId: string },
+): TargetActivityIndexBucket {
+  if (!params.storePath) {
+    return { updatedAt: 0, targetIds: [] };
+  }
+  return readNamespaceJson<TargetActivityIndexBucket>(TARGET_ACTIVITY_INDEX_NAMESPACE, {
+    storePath: params.storePath,
+    scope: { accountId: params.accountId },
+    format: "json",
+    fallback: { updatedAt: 0, targetIds: [] },
+  });
+}
+
+function writeTargetActivityIndex(
+  params: { storePath?: string; accountId: string; targetIds: string[] },
+): void {
+  if (!params.storePath) {
+    return;
+  }
+  writeNamespaceJsonAtomic(TARGET_ACTIVITY_INDEX_NAMESPACE, {
+    storePath: params.storePath,
+    scope: { accountId: params.accountId },
+    format: "json",
+    data: {
+      updatedAt: Date.now(),
+      targetIds: [...new Set(params.targetIds.filter((targetId) => targetId.trim()))],
+    } satisfies TargetActivityIndexBucket,
+  });
+}
+
+function touchTargetActivityIndex(
+  params: { storePath?: string; accountId: string; targetId: string },
+): void {
+  const bucket = readTargetActivityIndex(params);
+  writeTargetActivityIndex({
+    storePath: params.storePath,
+    accountId: params.accountId,
+    targetIds: [...bucket.targetIds, params.targetId],
   });
 }
 
@@ -540,4 +605,99 @@ export function listTargetSets(
     fallback: { updatedAt: 0, sets: {} },
   });
   return Object.values(bucket.sets).toSorted((left, right) => right.updatedAt - left.updatedAt);
+}
+
+export function clearAllLearningState(
+  params: { storePath?: string; accountId: string },
+): {
+  globalRules: number;
+  targetRules: number;
+  targetSets: number;
+  sessionNotes: number;
+  feedbackArtifacts: number;
+} {
+  if (!params.storePath) {
+    return { globalRules: 0, targetRules: 0, targetSets: 0, sessionNotes: 0, feedbackArtifacts: 0 };
+  }
+
+  const globalRules = listLearnedRules(params).length;
+  writeNamespaceJsonAtomic(LEARNED_RULES_NAMESPACE, {
+    storePath: params.storePath,
+    scope: { accountId: params.accountId },
+    format: "json",
+    data: { updatedAt: Date.now(), rules: {} } satisfies LearnedRuleBucket,
+  });
+
+  const targetSetBucket = readNamespaceJson<TargetSetBucket>(TARGET_SETS_NAMESPACE, {
+    storePath: params.storePath,
+    scope: { accountId: params.accountId },
+    format: "json",
+    fallback: { updatedAt: 0, sets: {} },
+  });
+  const targetSets = Object.keys(targetSetBucket.sets).length;
+  writeNamespaceJsonAtomic(TARGET_SETS_NAMESPACE, {
+    storePath: params.storePath,
+    scope: { accountId: params.accountId },
+    format: "json",
+    data: { updatedAt: Date.now(), sets: {} } satisfies TargetSetBucket,
+  });
+
+  const targetIds = [...new Set([
+    ...readTargetRuleIndex(params).targetIds,
+    ...readTargetActivityIndex(params).targetIds,
+  ].filter(Boolean))];
+  let targetRules = 0;
+  let sessionNotes = 0;
+  let feedbackArtifacts = 0;
+
+  for (const targetId of targetIds) {
+    const targetRuleBucket = readTargetRuleBucket({ ...params, targetId });
+    targetRules += Object.keys(targetRuleBucket.rules).length;
+    writeTargetRuleBucket({
+      storePath: params.storePath,
+      accountId: params.accountId,
+      targetId,
+      bucket: { updatedAt: Date.now(), rules: {} },
+    });
+
+    sessionNotes += clearListBucket(SESSION_NOTES_NAMESPACE, {
+      storePath: params.storePath,
+      accountId: params.accountId,
+      targetId,
+    });
+    feedbackArtifacts += clearListBucket(EVENTS_NAMESPACE, {
+      storePath: params.storePath,
+      accountId: params.accountId,
+      targetId,
+    });
+    feedbackArtifacts += clearListBucket(SNAPSHOTS_NAMESPACE, {
+      storePath: params.storePath,
+      accountId: params.accountId,
+      targetId,
+    });
+    feedbackArtifacts += clearListBucket(REFLECTIONS_NAMESPACE, {
+      storePath: params.storePath,
+      accountId: params.accountId,
+      targetId,
+    });
+  }
+
+  writeTargetRuleIndex({
+    storePath: params.storePath,
+    accountId: params.accountId,
+    targetIds: [],
+  });
+  writeTargetActivityIndex({
+    storePath: params.storePath,
+    accountId: params.accountId,
+    targetIds: [],
+  });
+
+  return {
+    globalRules,
+    targetRules,
+    targetSets,
+    sessionNotes,
+    feedbackArtifacts,
+  };
 }

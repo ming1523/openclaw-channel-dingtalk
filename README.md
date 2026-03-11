@@ -520,6 +520,7 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
   - `/learn list`
   - `/learn disable <ruleId>`
   - `/learn delete <ruleId>`
+  - `/learn clear all confirm`
 
 #### 真实可直接照抄的例子
 
@@ -559,6 +560,12 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
 1. 先用 `/learn list` 找到 `ruleId`
 2. 先执行 `/learn disable <ruleId>`
 3. 确认问题消失后，再决定是否 `/learn delete <ruleId>`
+
+#### 一键清空学习状态
+
+- owner 发：`/learn clear all confirm`
+- 会清空当前账号下的手工规则、目标规则、目标组、会话笔记与反馈痕迹
+- 这是高破坏性操作，所以必须显式带 `confirm`
 
 ## 安全策略
 

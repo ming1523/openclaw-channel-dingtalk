@@ -4,6 +4,7 @@ import {
   appendOutboundReplySnapshot,
   appendReflectionRecord,
   appendSessionLearningNote,
+  clearAllLearningState,
   deleteScopedRule,
   FeedbackKind,
   FeedbackEventRecord,
@@ -611,6 +612,19 @@ export function listScopedLearningRules(params: {
   accountId: string;
 }): ScopedLearnedRuleRecord[] {
   return listAllScopedRules(params);
+}
+
+export function clearAllManualLearningState(params: {
+  storePath?: string;
+  accountId: string;
+}): {
+  globalRules: number;
+  targetRules: number;
+  targetSets: number;
+  sessionNotes: number;
+  feedbackArtifacts: number;
+} {
+  return clearAllLearningState(params);
 }
 
 export function normalizeManualTriggerText(input: string | undefined): string {

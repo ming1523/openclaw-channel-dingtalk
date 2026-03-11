@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
     analyzeImplicitNegativeFeedback,
     buildLearningContextBlock,
+    clearAllManualLearningState,
+    createOrUpdateTargetSet,
     recordExplicitFeedbackLearning,
     recordOutboundReplyForLearning,
 } from "../../src/feedback-learning-service";
@@ -14,6 +16,7 @@ import {
     listLearnedRules,
     listOutboundReplySnapshots,
     listReflectionRecords,
+    listTargetSets,
 } from "../../src/feedback-learning-store";
 import type { MessageContent } from "../../src/types";
 
@@ -155,5 +158,69 @@ describe("feedback-learning-service", () => {
         expect(events[0]?.kind).toBe("implicit_negative");
         expect(reflections[0]?.category).toBe("quoted_context_missing");
         expect(notes[0]?.instruction).toContain("禁止根据上下文臆测引用内容");
+    });
+
+    it("clears manual learning state across global rules, target rules, target sets, notes and feedback artifacts", () => {
+        const storePath = createStorePath();
+
+        recordOutboundReplyForLearning({
+            enabled: true,
+            storePath,
+            accountId: "main",
+            targetId: "chat-a",
+            sessionKey: "session-a",
+            question: "看下这张图",
+            answer: "这是服务器状态图",
+            mode: "markdown",
+        });
+        recordExplicitFeedbackLearning({
+            enabled: true,
+            autoApply: true,
+            storePath,
+            accountId: "main",
+            targetId: "chat-a",
+            feedbackType: "feedback_down",
+            noteTtlMs: 60_000,
+        });
+        recordExplicitFeedbackLearning({
+            enabled: true,
+            autoApply: true,
+            storePath,
+            accountId: "main",
+            targetId: "chat-b",
+            feedbackType: "feedback_down",
+            noteTtlMs: 60_000,
+        });
+        createOrUpdateTargetSet({
+            storePath,
+            accountId: "main",
+            name: "ops",
+            targetIds: ["chat-a", "chat-b"],
+        });
+
+        const beforeSets = buildLearningContextBlock({
+            enabled: true,
+            storePath,
+            accountId: "main",
+            targetId: "chat-a",
+            content: createContent({ text: "帮我看图总结一下" }),
+        });
+        expect(beforeSets).toContain("高优先级学习约束");
+
+        const result = clearAllManualLearningState({
+            storePath,
+            accountId: "main",
+        });
+
+        expect(result.globalRules).toBeGreaterThanOrEqual(1);
+        expect(result.targetSets).toBe(1);
+        expect(result.sessionNotes).toBeGreaterThanOrEqual(1);
+        expect(result.feedbackArtifacts).toBeGreaterThanOrEqual(1);
+        expect(listLearnedRules({ storePath, accountId: "main" })).toEqual([]);
+        expect(listActiveSessionLearningNotes({ storePath, accountId: "main", targetId: "chat-a" })).toEqual([]);
+        expect(listOutboundReplySnapshots({ storePath, accountId: "main", targetId: "chat-a" })).toEqual([]);
+        expect(listFeedbackEvents({ storePath, accountId: "main", targetId: "chat-a" })).toEqual([]);
+        expect(listReflectionRecords({ storePath, accountId: "main", targetId: "chat-a" })).toEqual([]);
+        expect(listTargetSets({ storePath, accountId: "main" })).toEqual([]);
     });
 });

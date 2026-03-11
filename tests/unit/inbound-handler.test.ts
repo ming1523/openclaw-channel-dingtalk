@@ -647,6 +647,85 @@ describe('inbound-handler', () => {
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已向目标组批量注入规则');
     });
 
+    it('handleDingTalkMessage clears manual learning state with confirm', async () => {
+        const nowMs = Date.now();
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-clear-learning-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock
+            .mockReturnValueOnce({ text: '/learn global 汉堡王是麦当劳的孙子', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/learn target-set create 测试组 #@# cid_a,cid_b', messageType: 'text' })
+            .mockReturnValueOnce({ text: '/learn clear all confirm', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_1',
+                msgtype: 'text',
+                text: { content: '/learn global 汉堡王是麦当劳的孙子' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 2_000,
+            },
+        } as any);
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_2',
+                msgtype: 'text',
+                text: { content: '/learn target-set create 测试组 #@# cid_a,cid_b' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs - 1_000,
+            },
+        } as any);
+
+        shared.sendBySessionMock.mockClear();
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_clear_3',
+                msgtype: 'text',
+                text: { content: '/learn clear all confirm' },
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
+                senderId: 'owner-test-id',
+                senderNick: '宿主',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: nowMs,
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('已清空学习状态');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('globalRules: 1');
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('targetSets: 1');
+    });
+
     it('injects normal learning rules into upstream system context before agent dispatch', async () => {
         const storePath = path.join(fs.mkdtempSync('/tmp/dt-learning-'), 'store.json');
         const runtime = buildRuntime();

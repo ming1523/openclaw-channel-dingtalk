@@ -142,7 +142,7 @@ describe('runtime + peer registry + index plugin', () => {
         });
     });
 
-    it('returns partial success payload when initial doc append fails after creation', async () => {
+    it('returns success payload with partial-success metadata when initial doc append fails after creation', async () => {
         const plugin = (await import('../../index')).default;
         const registerGatewayMethod = vi.fn();
 
@@ -165,11 +165,12 @@ describe('runtime + peer registry + index plugin', () => {
             params: { spaceId: 'space_1', title: '测试文档', content: '第一段' },
         });
 
-        expect(respondCreate).toHaveBeenCalledWith(false, {
-            error: 'initial content append failed after document creation',
+        expect(respondCreate).toHaveBeenCalledWith(true, {
             partialSuccess: true,
+            initContentAppended: false,
             docId: 'doc_partial',
             doc: { docId: 'doc_partial', title: '测试文档', docType: 'alidoc' },
+            appendError: 'initial content append failed after document creation',
         });
     });
 });

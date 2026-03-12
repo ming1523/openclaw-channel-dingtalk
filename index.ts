@@ -39,11 +39,12 @@ const plugin: DingtalkPluginModule = {
         return respond(true, doc);
       } catch (error) {
         if (error instanceof DocCreateAppendError) {
-          return respond(false, {
-            error: error.message,
+          return respond(true, {
             partialSuccess: true,
+            initContentAppended: false,
             docId: error.doc.docId,
             doc: error.doc,
+            appendError: error.message,
           });
         }
         throw error;

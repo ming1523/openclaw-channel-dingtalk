@@ -4,6 +4,8 @@ const GROUP_HISTORY_NAMESPACE = "group.recent-history";
 const CONVERSATION_HISTORY_INDEX_NAMESPACE = "conversation.history-index";
 const MAX_HISTORY_ENTRIES = 200;
 const ROLLUP_CHUNK_SIZE = 20;
+// TODO: migrate to an upstream history API once OpenClaw exposes a unified
+// recent-window + rollup-summary interface for channel integrations.
 const MAX_SUMMARY_SEGMENTS = 90;
 const MAX_SEGMENT_CHARS = 1600;
 

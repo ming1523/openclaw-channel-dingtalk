@@ -18,7 +18,6 @@ export interface ParsedLearnCommand {
     | "owner-status"
     | "target-set-create"
     | "target-set-apply"
-    | "summary"
     | "unknown";
   instruction?: string;
   ruleId?: string;
@@ -125,9 +124,6 @@ export function parseLearnCommand(text: string | undefined): ParsedLearnCommand 
     return targetIds.length > 0 && payload.body
       ? { scope: "targets", targetIds, instruction: payload.body }
       : { scope: "unknown" };
-  }
-  if (normalized.startsWith("/summary")) {
-    return { scope: "summary" };
   }
   return { scope: "unknown" };
 }

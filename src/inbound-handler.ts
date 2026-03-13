@@ -72,10 +72,13 @@ import {
   listScopedLearningRules,
   resolveManualForcedReply,
 } from "./feedback-learning-service";
-import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
+import { formatDingTalkErrorPayloadLog, getProxyBypassOption, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
 const DEFAULT_THINKING_MESSAGE = "🤔 思考中，请稍候...";
+const THINKING_EMOTION_NAME = "🤔思考中";
+const THINKING_EMOTION_ID = "2659900";
+const THINKING_EMOTION_BACKGROUND_ID = "im_bg_1";
 const proactiveHintLastSentAt = new Map<string, number>();
 
 export function resetProactivePermissionHintStateForTest(): void {
@@ -131,6 +134,95 @@ function shouldSendProactivePermissionHint(params: {
 
   proactiveHintLastSentAt.set(key, params.nowMs);
   return true;
+}
+
+async function addThinkingEmotionReply(
+  config: DingTalkConfig,
+  data: {
+    msgId: string;
+    conversationId: string;
+    robotCode?: string;
+  },
+  log?: { debug?: (msg: string) => void; warn?: (msg: string) => void },
+): Promise<boolean> {
+  const robotCode = (data.robotCode || config.robotCode || config.clientId || "").trim();
+  if (!robotCode || !data.msgId || !data.conversationId) {
+    return false;
+  }
+
+  try {
+    const token = await getAccessToken(config, log as any);
+    await axios.post(
+      "https://api.dingtalk.com/v1.0/robot/emotion/reply",
+      {
+        robotCode,
+        openMsgId: data.msgId,
+        openConversationId: data.conversationId,
+        emotionType: 2,
+        emotionName: THINKING_EMOTION_NAME,
+        textEmotion: {
+          emotionId: THINKING_EMOTION_ID,
+          emotionName: THINKING_EMOTION_NAME,
+          text: THINKING_EMOTION_NAME,
+          backgroundId: THINKING_EMOTION_BACKGROUND_ID,
+        },
+      },
+      {
+        headers: {
+          "x-acs-dingtalk-access-token": token,
+          "Content-Type": "application/json",
+        },
+        ...getProxyBypassOption(config),
+      },
+    );
+    return true;
+  } catch (err: any) {
+    log?.warn?.(`[DingTalk] Thinking reaction attach failed: ${err.message}`);
+    if (err?.response?.data !== undefined) {
+      log?.warn?.(formatDingTalkErrorPayloadLog("inbound.thinkingReactionAttach", err.response.data));
+    }
+    return false;
+  }
+}
+
+async function recallThinkingEmotionReply(
+  config: DingTalkConfig,
+  data: {
+    msgId: string;
+    conversationId: string;
+    robotCode?: string;
+  },
+  log?: { debug?: (msg: string) => void; warn?: (msg: string) => void },
+): Promise<void> {
+  const robotCode = (data.robotCode || config.robotCode || config.clientId || "").trim();
+  if (!robotCode || !data.msgId || !data.conversationId) {
+    return;
+  }
+
+  try {
+    const token = await getAccessToken(config, log as any);
+    await axios.post(
+      "https://api.dingtalk.com/v1.0/robot/emotion/recall",
+      {
+        robotCode,
+        openMsgId: data.msgId,
+        openConversationId: data.conversationId,
+        emotionType: 2,
+      },
+      {
+        headers: {
+          "x-acs-dingtalk-access-token": token,
+          "Content-Type": "application/json",
+        },
+        ...getProxyBypassOption(config),
+      },
+    );
+  } catch (err: any) {
+    log?.debug?.(`[DingTalk] Thinking reaction recall failed: ${err.message}`);
+    if (err?.response?.data !== undefined) {
+      log?.debug?.(formatDingTalkErrorPayloadLog("inbound.thinkingReactionRecall", err.response.data));
+    }
+  }
 }
 
 function stripQuotedPrefixForJournal(value: string): string {
@@ -1237,7 +1329,20 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
+  let thinkingReactionAttached = false;
   try {
+    if (!useCardMode && dingtalkConfig.showThinkingReaction === true) {
+      thinkingReactionAttached = await addThinkingEmotionReply(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          robotCode: data.robotCode,
+        },
+        log,
+      );
+    }
+
     // 4) Optional "thinking..." feedback (markdown mode only).
     if (dingtalkConfig.showThinking !== false) {
       let thinkingText = (dingtalkConfig.thinkingMessage || "").trim() || DEFAULT_THINKING_MESSAGE;
@@ -1423,6 +1528,17 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       }
     }
   } finally {
+    if (thinkingReactionAttached) {
+      await recallThinkingEmotionReply(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          robotCode: data.robotCode,
+        },
+        log,
+      );
+    }
     releaseSessionLock();
   }
 }

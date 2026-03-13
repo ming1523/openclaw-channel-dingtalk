@@ -153,6 +153,23 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.asyncAckText).toBe('已收到，正在处理中，稍后回复。');
     });
 
+    it('accepts showThinkingReaction config and defaults it to false', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+            showThinkingReaction: true,
+        }) as { showThinkingReaction?: boolean };
+
+        expect(parsed.showThinkingReaction).toBe(true);
+
+        const defaults = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+        }) as { showThinkingReaction?: boolean };
+
+        expect(defaults.showThinkingReaction).toBe(false);
+    });
+
     it('exports control-ui-compatible JSON schema nodes', () => {
         const jsonSchema = DingTalkConfigSchema.toJSONSchema({
             target: 'draft-07',

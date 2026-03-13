@@ -45,6 +45,8 @@ export interface DingTalkConfig extends OpenClawConfig {
   journalTTLDays?: number;
   showThinking?: boolean;
   thinkingMessage?: string;
+  /** Show native DingTalk thinking reaction on the inbound message (markdown mode only) */
+  showThinkingReaction?: boolean;
   asyncMode?: boolean;
   asyncAckText?: string;
   debug?: boolean;
@@ -108,6 +110,8 @@ export interface DingTalkChannelConfig {
   journalTTLDays?: number;
   showThinking?: boolean;
   thinkingMessage?: string;
+  /** Show native DingTalk thinking reaction on the inbound message (markdown mode only) */
+  showThinkingReaction?: boolean;
   asyncMode?: boolean;
   asyncAckText?: string;
   debug?: boolean;
@@ -266,6 +270,7 @@ export interface DingTalkInboundMessage {
   senderStaffId?: string;
   senderNick?: string;
   chatbotUserId: string;
+  robotCode?: string;
   sessionWebhook: string;
 }
 

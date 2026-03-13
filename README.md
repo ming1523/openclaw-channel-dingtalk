@@ -376,6 +376,7 @@ openclaw configure --section channels
       "journalTTLDays": 7,
       "showThinking": true, // 仅 markdown 模式生效
       "thinkingMessage": "🤔 思考中，请稍候...", // 仅 markdown 模式生效；设为 "emoji" 可启用随机颜文字彩蛋
+      "showThinkingReaction": false, // 可选：给原消息贴“🤔思考中”表情，处理结束后撤回（仅 markdown 模式）
       "asyncMode": false, // 开启后先回执“已收到”，再后台处理
       "asyncAckText": "已收到，正在处理中，稍后回复。", // asyncMode 生效时的即时回执文案
       "debug": false,
@@ -416,6 +417,7 @@ openclaw gateway restart
 | `journalTTLDays`        | number   | `7`          | `originalMsgId` 文本回溯日志的保留天数      |
 | `showThinking`          | boolean  | `true`       | 是否发送“思考中”提示消息（仅 markdown 模式生效） |
 | `thinkingMessage`       | string   | `"🤔 思考中，请稍候..."` | 自定义“思考中”提示文案（showThinking 开启时生效，仅 markdown 模式）；设为 `"emoji"` 可按用户语气返回随机颜文字 |
+| `showThinkingReaction`  | boolean  | `false`      | 是否给用户原消息添加钉钉原生“🤔思考中”表情，并在处理结束后撤回（仅 markdown 模式） |
 | `asyncMode`             | boolean  | `false`      | 是否在收到消息后立即回执，并在后台继续处理 |
 | `asyncAckText`          | string   | `"已收到，正在处理中，稍后回复。"` | `asyncMode` 开启时的即时回执文案 |
 | `messageType`           | string   | `"markdown"` | 消息类型：markdown/card                     |
@@ -448,6 +450,19 @@ openclaw gateway restart
 ```
 
 > 说明：这是一个轻量彩蛋功能，仅影响 markdown 模式下的“思考中”提示；`messageType="card"` 时不会发送该独立提示消息。
+
+### 钉钉原生“思考中”表情反馈
+
+当 `messageType=markdown` 且 `showThinkingReaction=true` 时，插件会在处理开始时给用户原消息添加一条钉钉原生“🤔思考中”表情反馈，并在处理结束后自动撤回。该增强不会阻断主流程：贴表情或撤表情失败时只记录日志，仍继续正常回复。
+
+> 设计/实现参考自 `DingTalk-Real-AI/dingtalk-openclaw-connector`（MIT）：
+> <https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector>
+
+说明：
+
+- 仅 `markdown` 模式启用；`card` 模式继续使用现有卡片/文本思考展示
+- 该反馈作用于用户原消息，不会额外发送一条“思考中”消息
+- 可与 `showThinking` 同时开启；两者分别对应“原消息表情反馈”和“独立提示消息”
 
 ### `asyncMode` 异步回执
 

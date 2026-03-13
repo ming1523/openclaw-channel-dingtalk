@@ -349,6 +349,7 @@ openclaw configure --section channels
       "journalTTLDays": 7,
       "showThinking": true, // 仅 markdown 模式生效
       "thinkingMessage": "🤔 思考中，请稍候...", // 仅 markdown 模式生效；设为 "emoji" 可启用随机颜文字彩蛋
+      "showThinkingReaction": false, // 可选：给原消息贴“🤔思考中”表情，处理结束后撤回（仅 markdown 模式）
       "debug": false,
       "messageType": "markdown", // 或 "card"
       // "mediaMaxMb": 20,  // 可选：接收文件大小上限（MB），默认 5 MB
@@ -387,6 +388,7 @@ openclaw gateway restart
 | `journalTTLDays`        | number   | `7`          | `originalMsgId` 文本回溯日志的保留天数      |
 | `showThinking`          | boolean  | `true`       | 是否发送“思考中”提示消息（仅 markdown 模式生效） |
 | `thinkingMessage`       | string   | `"🤔 思考中，请稍候..."` | 自定义“思考中”提示文案（showThinking 开启时生效，仅 markdown 模式）；设为 `"emoji"` 可按用户语气返回随机颜文字 |
+| `showThinkingReaction`  | boolean  | `false`      | 是否给用户原消息添加钉钉原生“🤔思考中”表情，并在处理结束后撤回（仅 markdown 模式） |
 | `messageType`           | string   | `"markdown"` | 消息类型：markdown/card                     |
 | `cardTemplateId`        | string   |              | AI 互动卡片模板 ID（仅当 messageType=card） |
 | `cardTemplateKey`       | string   | `"content"`  | 卡片模板内容字段键（仅当 messageType=card） |
@@ -416,11 +418,23 @@ openclaw gateway restart
 }
 ```
 
-> 说明：这是一个轻量彩蛋功能，仅影响 markdown 模式下的“思考中”提示；`messageType="card"` 时不会发送该独立提示消息。
 | `bypassProxyForSend`    | boolean  | `false`      | 仅对 send/card/upload 出站请求绕过系统 HTTP(S) 代理 |
 | `learningEnabled` | boolean | `false`    | 启用本地学习闭环（事件、反思、会话笔记、全局规则） |
 | `learningAutoApply` | boolean | `false` | 是否将反思自动注入会话/全局规则；默认只采集不生效 |
 | `learningNoteTtlMs` | number | `21600000` | 会话级学习笔记有效期（毫秒，默认 6 小时） |
+
+### 钉钉原生“思考中”表情反馈
+
+当 `messageType=markdown` 且 `showThinkingReaction=true` 时，插件会在处理开始时给用户原消息添加一条钉钉原生“🤔思考中”表情反馈，并在处理结束后自动撤回。该增强不会阻断主流程：贴表情或撤表情失败时只记录日志，仍继续正常回复。
+
+> 设计/实现参考自 `DingTalk-Real-AI/dingtalk-openclaw-connector`（MIT）：
+> <https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector>
+
+说明：
+
+- 仅 `markdown` 模式启用；`card` 模式继续使用现有卡片流式 thinking 展示
+- 该反馈作用于用户原消息，不会额外发送一条“思考中”消息
+- 可与 `showThinking` 同时开启；两者分别对应“原消息表情反馈”和“独立提示消息”
 
 ### 连接鲁棒性配置
 

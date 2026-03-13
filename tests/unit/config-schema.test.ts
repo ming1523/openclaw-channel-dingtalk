@@ -73,9 +73,10 @@ describe('DingTalkConfigSchema', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',
             clientSecret: 'secret',
-        }) as { keepAlive?: boolean };
+        }) as { keepAlive?: boolean; showThinkingReaction?: boolean };
 
         expect(parsed.keepAlive).toBeUndefined();
+        expect(parsed.showThinkingReaction).toBe(false);
     });
 
     it('keeps account-level keepAlive undefined when omitted', () => {

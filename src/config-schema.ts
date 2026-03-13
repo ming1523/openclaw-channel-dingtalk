@@ -42,6 +42,9 @@ const DingTalkAccountConfigShape = {
   /** Custom thinking message content when showThinking is enabled (markdown mode only) */
   thinkingMessage: z.string().optional().default("🤔 思考中，请稍候..."),
 
+  /** Show native DingTalk thinking reaction on the inbound message (markdown mode only) */
+  showThinkingReaction: z.boolean().optional().default(false),
+
   /** Enable debug logging */
   debug: z.boolean().optional().default(false),
 

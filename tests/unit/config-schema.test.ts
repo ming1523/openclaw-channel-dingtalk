@@ -142,6 +142,23 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.feedbackLearningAutoApply).toBe(true);
         expect(parsed.feedbackLearningNoteTtlMs).toBe(120000);
     });
+    it('keeps historyLimit opt-in and accepts overrides', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+            accounts: {
+                main: {
+                    clientId: 'id',
+                    clientSecret: 'secret',
+                    historyLimit: 80,
+                },
+            },
+        }) as { historyLimit?: number; accounts: Record<string, { historyLimit?: number }> };
+
+        expect(parsed.historyLimit).toBeUndefined();
+        expect(parsed.accounts.main?.historyLimit).toBe(80);
+    });
+
     it('accepts asyncMode config and default asyncAckText', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',
@@ -166,4 +183,5 @@ describe('DingTalkConfigSchema', () => {
         expect(jsonSchema.properties?.accounts?.type).toBe('object');
         expect(jsonSchema.properties?.accounts?.additionalProperties?.type).toBe('object');
     });
+
 });

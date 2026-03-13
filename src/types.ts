@@ -82,6 +82,8 @@ export interface DingTalkConfig extends OpenClawConfig {
   learningAutoApply?: boolean;
   /** Session learning note TTL in milliseconds (default 6h) */
   learningNoteTtlMs?: number;
+  /** Number of recent group messages to retain for reply context and summary (default 50) */
+  historyLimit?: number;
   /** @deprecated Use learningEnabled */
   feedbackLearningEnabled?: boolean;
   /** @deprecated Use learningAutoApply */
@@ -144,6 +146,8 @@ export interface DingTalkChannelConfig {
   learningAutoApply?: boolean;
   /** Session learning note TTL in milliseconds (default 6h) */
   learningNoteTtlMs?: number;
+  /** Number of recent group messages to retain for reply context and summary (default 50) */
+  historyLimit?: number;
   /** @deprecated Use learningEnabled */
   feedbackLearningEnabled?: boolean;
   /** @deprecated Use learningAutoApply */
@@ -302,6 +306,7 @@ export interface MessageContent {
   docSpaceId?: string;
   docFileId?: string;
   quoted?: QuotedInfo;
+  mentions?: string[];
 }
 
 /**

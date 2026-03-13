@@ -85,7 +85,7 @@ import {
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
 const DEFAULT_THINKING_MESSAGE = "🤔 思考中，请稍候...";
-const DEFAULT_GROUP_HISTORY_LIMIT = 50;
+const DEFAULT_GROUP_HISTORY_LIMIT = 0;
 const proactiveHintLastSentAt = new Map<string, number>();
 
 function resolveSummaryMentionNames(mentionNames: string[] | undefined, senderName: string | undefined): string[] | undefined {

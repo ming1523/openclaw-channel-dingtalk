@@ -1921,6 +1921,41 @@ describe('inbound-handler', () => {
         );
     });
 
+    it('skips InboundHistory injection when historyLimit is not configured', async () => {
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-history-default-off-'), 'store.json');
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi.fn().mockReturnValue(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '群消息', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+            data: {
+                msgId: 'm_history_default_off',
+                msgtype: 'text',
+                text: { content: '群消息' },
+                conversationType: '2',
+                conversationId: 'cid_group_history_default_off',
+                conversationTitle: '群聊DefaultOff',
+                senderId: 'user_1',
+                senderNick: '甲',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: 1700000003000,
+            },
+        } as any);
+
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                InboundHistory: undefined,
+            }),
+        );
+    });
+
     it('uses DingTalk DM conversationId for journal writes instead of senderId', async () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi

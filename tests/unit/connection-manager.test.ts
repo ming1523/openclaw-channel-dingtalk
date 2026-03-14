@@ -912,18 +912,27 @@ describe('ConnectionManager', () => {
 
     // ── Socket idle timeout ─────────────────────────────────────────────
 
+    it('does not trigger idle timeout by default when the socket stays silent', async () => {
+        const { client } = createMockClient();
+
+        const manager = new ConnectionManager(client, 'main', baseConfig());
+
+        await manager.connect();
+        await vi.advanceTimersByTimeAsync(121_000);
+
+        expect(client.connect).toHaveBeenCalledTimes(1);
+    });
+
     it('triggers reconnection when socket is idle for 60s', async () => {
         const { client, socket } = createMockClient();
         const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+        client.config = { keepAlive: true };
 
         const manager = new ConnectionManager(client, 'main', baseConfig(), log);
 
         await manager.connect();
 
-        // Advance past the grace window (3s) + enough health checks to reach 60s idle
-        // Health checks run every 5s; at each check, idleMs = now - lastSocketActivityAt.
-        // lastSocketActivityAt is set to Date.now() on connect. After 60s of no
-        // socket message events, the idle threshold is met.
+        // After 60s of no message/pong activity, the idle threshold is met.
         await vi.advanceTimersByTimeAsync(61_000);
 
         expect(log.warn).toHaveBeenCalledWith(
@@ -938,6 +947,7 @@ describe('ConnectionManager', () => {
 
     it('does not trigger idle timeout when socket receives messages', async () => {
         const { client, socket } = createMockClient();
+        client.config = { keepAlive: true };
 
         const manager = new ConnectionManager(client, 'main', baseConfig());
 
@@ -959,9 +969,26 @@ describe('ConnectionManager', () => {
         expect(client.connect.mock.calls.length).toBe(connectCountAfterInit);
     });
 
+    it('does not trigger idle timeout when pong frames refresh activity', async () => {
+        const { client, socket } = createMockClient();
+        client.config = { keepAlive: true };
+
+        const manager = new ConnectionManager(client, 'main', baseConfig());
+
+        await manager.connect();
+        const connectCountAfterInit = client.connect.mock.calls.length;
+
+        await vi.advanceTimersByTimeAsync(50_000);
+        socket.emit('pong');
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(client.connect.mock.calls.length).toBe(connectCountAfterInit);
+    });
+
     it('idle timeout counter is tracked in runtimeCounters', async () => {
         const { client } = createMockClient();
         const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+        client.config = { keepAlive: true };
 
         const manager = new ConnectionManager(client, 'main', baseConfig(), log);
 

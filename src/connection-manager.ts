@@ -52,13 +52,6 @@ export class ConnectionManager {
   private static readonly DEFAULT_MAX_RECONNECT_CYCLES = 10;
   private static readonly MAX_CYCLE_BACKOFF_MS = 5000;
   private static readonly MAX_CONSECUTIVE_DEADLINE_TIMEOUTS = 5;
-  // If no application-level WebSocket frames (CALLBACK, SYSTEM/ping,
-  // SYSTEM/KEEPALIVE, etc.) arrive within this window, the connection is
-  // likely a zombie where the server silently stopped routing.  Protocol-
-  // level pong frames are NOT tracked (they bypass the "message" event),
-  // so this specifically detects the scenario where TCP is alive but the
-  // server no longer delivers any messages.  DingTalk servers typically
-  // send keepalive/ping every ~20-30s, so 60s means ≥2 missed keepalives.
   private static readonly SOCKET_IDLE_TIMEOUT_MS = 60_000;
   private runtimeReconnectCycles: number = 0;
   private reconnectDeadline?: number;
@@ -81,6 +74,7 @@ export class ConnectionManager {
   private socketCloseHandler?: (code: number, reason: string) => void;
   private socketErrorHandler?: (error: Error) => void;
   private socketMessageHandler?: (data: any) => void;
+  private socketPongHandler?: () => void;
   private monitoredSocket?: any;
 
   // Sleep abort control
@@ -111,6 +105,18 @@ export class ConnectionManager {
     if (this.config.onStateChange) {
       this.config.onStateChange(this.state, error);
     }
+  }
+
+  private isSocketIdleDetectionEnabled(): boolean {
+    const clientAny = this.client as any;
+    const configKeepAlive = clientAny.config?.keepAlive;
+    if (typeof configKeepAlive === "boolean") {
+      return configKeepAlive;
+    }
+    if (typeof clientAny.getConfig === "function") {
+      return clientAny.getConfig()?.keepAlive === true;
+    }
+    return false;
   }
 
   private logRuntimeCounters(reason: string): void {
@@ -419,14 +425,19 @@ export class ConnectionManager {
       // server likely stopped routing to this connection without sending a
       // disconnect message. This catches the "phantom healthy" zombie state
       // where connected=true and socket is open but nothing is delivered.
+      const socketIdleTimeoutMs = this.isSocketIdleDetectionEnabled()
+        ? ConnectionManager.SOCKET_IDLE_TIMEOUT_MS
+        : undefined;
       const idleMs = this.lastSocketActivityAt !== undefined
         ? now - this.lastSocketActivityAt
         : undefined;
-      const socketIdle = idleMs !== undefined && idleMs >= ConnectionManager.SOCKET_IDLE_TIMEOUT_MS;
+      const socketIdle = socketIdleTimeoutMs !== undefined
+        && idleMs !== undefined
+        && idleMs >= socketIdleTimeoutMs;
 
       if (socketIdle) {
         this.log?.warn?.(
-          `[${this.accountId}] Socket idle for ${(idleMs / 1000).toFixed(1)}s (threshold ${ConnectionManager.SOCKET_IDLE_TIMEOUT_MS / 1000}s), treating as zombie connection`,
+          `[${this.accountId}] Socket idle for ${(idleMs / 1000).toFixed(1)}s (threshold ${(socketIdleTimeoutMs / 1000).toFixed(1)}s), treating as zombie connection`,
         );
         this.runtimeCounters.socketIdleReconnects += 1;
         this.logRuntimeCounters("socket-idle-reconnect");
@@ -540,6 +551,11 @@ export class ConnectionManager {
         }
       };
       socket.on("message", this.socketMessageHandler);
+
+      this.socketPongHandler = () => {
+        this.lastSocketActivityAt = Date.now();
+      };
+      socket.on("pong", this.socketPongHandler);
     }
   }
 
@@ -594,6 +610,10 @@ export class ConnectionManager {
       if (this.socketMessageHandler) {
         socket.removeListener("message", this.socketMessageHandler);
         this.socketMessageHandler = undefined;
+      }
+      if (this.socketPongHandler) {
+        socket.removeListener("pong", this.socketPongHandler);
+        this.socketPongHandler = undefined;
       }
 
       this.log?.debug?.(`[${this.accountId}] Socket event listeners removed from monitored socket`);

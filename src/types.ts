@@ -44,7 +44,6 @@ export interface DingTalkConfig extends OpenClawConfig {
   mediaUrlAllowlist?: string[];
   journalTTLDays?: number;
   ackReaction?: string;
-  ackReactionStrategy?: "fixed" | "tone-based";
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;
@@ -107,7 +106,6 @@ export interface DingTalkChannelConfig {
   mediaUrlAllowlist?: string[];
   journalTTLDays?: number;
   ackReaction?: string;
-  ackReactionStrategy?: "fixed" | "tone-based";
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;

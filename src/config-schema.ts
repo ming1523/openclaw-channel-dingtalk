@@ -36,8 +36,6 @@ const DingTalkAccountConfigShape = {
 
   /** Official OpenClaw ackReaction entry for processing feedback; empty string disables it */
   ackReaction: z.string().optional().default("🤔思考中"),
-  /** DingTalk-specific ack reaction selection strategy */
-  ackReactionStrategy: z.enum(["fixed", "tone-based"]).optional().default("fixed"),
 
   journalTTLDays: z.number().int().min(1).optional().default(DEFAULT_JOURNAL_TTL_DAYS),
   /** Enable debug logging */

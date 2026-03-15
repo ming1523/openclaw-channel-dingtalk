@@ -7,7 +7,7 @@ import {
   getCardContentByProcessQueryKey,
   isCardInTerminalState,
 } from "./card-service";
-import { resolveGroupConfig } from "./config";
+import { resolveAckReactionSetting, resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
@@ -1141,7 +1141,14 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   log?.info?.(`[DingTalk] Inbound: from=${senderName} text="${content.text.slice(0, 50)}..."`);
 
-  const ackReaction = (dingtalkConfig.ackReaction ?? cfg.messages?.ackReaction ?? "").trim();
+  const ackReaction =
+    typeof dingtalkConfig.ackReaction === "string"
+      ? dingtalkConfig.ackReaction.trim()
+      : resolveAckReactionSetting({
+          cfg,
+          accountId,
+          agentId: route.agentId,
+        });
   const shouldAttachAckReaction = Boolean(ackReaction);
   let ackReactionAttached = false;
   let ackReactionAttachedAt = 0;

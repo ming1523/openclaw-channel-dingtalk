@@ -2253,6 +2253,59 @@ describe('inbound-handler', () => {
         }
     });
 
+    it('handleDingTalkMessage falls back to agent identity emoji when account channel and messages ackReaction are absent', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            await handleDingTalkMessage({
+                cfg: {
+                    agents: {
+                        list: [
+                            {
+                                id: 'main',
+                                identity: { emoji: '👀' },
+                            },
+                        ],
+                    },
+                },
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                } as any,
+                data: {
+                    msgId: 'm5_identity_ackreaction',
+                    msgtype: 'text',
+                    text: { content: 'hello' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                1,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({
+                    openMsgId: 'm5_identity_ackreaction',
+                    openConversationId: 'cid_ok',
+                    emotionName: '🤔思考中',
+                }),
+                expect.any(Object),
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('handleDingTalkMessage does not send standalone thinking message when ackReaction is enabled', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);

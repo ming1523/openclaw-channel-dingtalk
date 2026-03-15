@@ -2,6 +2,7 @@ import axios from 'axios';
 import fs from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { getAccessToken } from '../../src/auth';
 
 const shared = vi.hoisted(() => ({
     sendBySessionMock: vi.fn(),
@@ -84,6 +85,7 @@ import { recordProactiveRiskObservation } from '../../src/proactive-risk-registr
 
 const mockedAxiosPost = vi.mocked(axios.post);
 const mockedAxiosGet = vi.mocked(axios.get);
+const mockedGetAccessToken = vi.mocked(getAccessToken);
 
 function buildRuntime() {
     return {
@@ -120,6 +122,8 @@ describe('inbound-handler', () => {
         fs.rmSync(path.join(path.dirname('/tmp/store.json'), 'dingtalk-state'), { recursive: true, force: true });
         mockedAxiosPost.mockReset();
         mockedAxiosGet.mockReset();
+        mockedGetAccessToken.mockReset();
+        mockedGetAccessToken.mockResolvedValue('token_abc');
         shared.sendBySessionMock.mockReset();
         shared.sendMessageMock.mockReset();
         shared.sendMessageMock.mockImplementation(async (_config: any, _to: any, text: any, options: any) => {
@@ -2087,6 +2091,242 @@ describe('inbound-handler', () => {
 
         expect(shared.isCardInTerminalStateMock).toHaveBeenCalledWith('5');
         expect(shared.finishAICardMock).not.toHaveBeenCalled();
+    });
+
+    it('handleDingTalkMessage adds and recalls native thinking reaction in markdown mode', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const releaseFn = vi.fn();
+        shared.acquireSessionLockMock.mockResolvedValueOnce(releaseFn);
+        try {
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    showThinking: false,
+                    showThinkingReaction: true,
+                } as any,
+                data: {
+                    msgId: 'm5_reaction',
+                    msgtype: 'text',
+                    text: { content: 'hello' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                1,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({
+                    robotCode: 'ding_client',
+                    openMsgId: 'm5_reaction',
+                    openConversationId: 'cid_ok',
+                    emotionName: '🤔思考中',
+                }),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'x-acs-dingtalk-access-token': 'token_abc',
+                    }),
+                }),
+            );
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                2,
+                'https://api.dingtalk.com/v1.0/robot/emotion/recall',
+                expect.objectContaining({
+                    robotCode: 'ding_client',
+                    openMsgId: 'm5_reaction',
+                    openConversationId: 'cid_ok',
+                    emotionName: '🤔思考中',
+                }),
+                expect.any(Object),
+            );
+            expect(mockedAxiosPost.mock.invocationCallOrder[0]).toBeLessThan(
+                shared.acquireSessionLockMock.mock.invocationCallOrder[0],
+            );
+            expect(releaseFn.mock.invocationCallOrder[0]).toBeLessThan(
+                mockedAxiosPost.mock.invocationCallOrder[1],
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage prefers native thinking reaction over standalone thinking message', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    showThinking: true,
+                    showThinkingReaction: true,
+                } as any,
+                data: {
+                    msgId: 'm5_reaction_prefer',
+                    msgtype: 'text',
+                    text: { content: 'hello' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenCalledTimes(2);
+            const sentTexts = shared.sendMessageMock.mock.calls.map((call: any[]) => String(call[2] ?? ''));
+            expect(sentTexts.some((text: string) => text.includes('思考中'))).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage adds thinking reaction in card mode', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'card',
+                    showThinking: false,
+                    showThinkingReaction: true,
+                } as any,
+                data: {
+                    msgId: 'm5_card_reaction',
+                    msgtype: 'text',
+                    text: { content: 'hello' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                1,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({
+                    openMsgId: 'm5_card_reaction',
+                    openConversationId: 'cid_ok',
+                }),
+                expect.any(Object),
+            );
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                2,
+                'https://api.dingtalk.com/v1.0/robot/emotion/recall',
+                expect.objectContaining({
+                    openMsgId: 'm5_card_reaction',
+                    openConversationId: 'cid_ok',
+                    emotionName: '🤔思考中',
+                }),
+                expect.any(Object),
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage keeps thinking reaction when configured card mode falls back', async () => {
+        vi.useFakeTimers();
+        shared.createAICardMock.mockResolvedValueOnce(null);
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'card',
+                    showThinking: false,
+                    showThinkingReaction: true,
+                } as any,
+                data: {
+                    msgId: 'm5_card_fallback_reaction',
+                    msgtype: 'text',
+                    text: { content: 'hello' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenCalledTimes(2);
+            expect(shared.sendMessageMock).toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage continues when thinking reaction attach fails', async () => {
+        mockedAxiosPost.mockRejectedValueOnce(new Error('reaction failed'));
+
+        await expect(handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                clientId: 'ding_client',
+                clientSecret: 'secret',
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                showThinking: false,
+                showThinkingReaction: true,
+            } as any,
+            data: {
+                msgId: 'm5_reaction_fail',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any)).resolves.toBeUndefined();
+
+        expect(shared.sendMessageMock).toHaveBeenCalled();
+        expect(mockedAxiosPost).toHaveBeenCalledTimes(1);
     });
 
     it('handleDingTalkMessage ignores thinking and tool card updates when card is already finalized', async () => {

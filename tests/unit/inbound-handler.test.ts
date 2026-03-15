@@ -2546,7 +2546,7 @@ describe('inbound-handler', () => {
                 expect.objectContaining({
                     openMsgId: 'm5_global_ackreaction',
                     openConversationId: 'cid_ok',
-                    emotionName: '🤔思考中',
+                    emotionName: '👀',
                 }),
                 expect.any(Object),
             );
@@ -2599,7 +2599,7 @@ describe('inbound-handler', () => {
                 expect.objectContaining({
                     openMsgId: 'm5_identity_ackreaction',
                     openConversationId: 'cid_ok',
-                    emotionName: '🤔思考中',
+                    emotionName: '👀',
                 }),
                 expect.any(Object),
             );
@@ -2648,6 +2648,71 @@ describe('inbound-handler', () => {
                 expect.any(Object),
             );
         } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage uses classified emoji when ackReaction=emoji', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        shared.extractMessageContentMock.mockReturnValueOnce({
+            text: '你真棒，快夸夸我',
+            messageType: 'text',
+        });
+        try {
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_ackreaction_emoji',
+                    msgtype: 'text',
+                    text: { content: '你真棒，快夸夸我' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                1,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({
+                    openMsgId: 'm5_ackreaction_emoji',
+                    openConversationId: 'cid_ok',
+                    emotionName: '叽 (๑•̀ㅂ•́)و✧',
+                    textEmotion: expect.objectContaining({
+                        emotionName: '叽 (๑•̀ㅂ•́)و✧',
+                        text: '叽 (๑•̀ㅂ•́)و✧',
+                    }),
+                }),
+                expect.any(Object),
+            );
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                2,
+                'https://api.dingtalk.com/v1.0/robot/emotion/recall',
+                expect.objectContaining({
+                    openMsgId: 'm5_ackreaction_emoji',
+                    openConversationId: 'cid_ok',
+                    emotionName: '叽 (๑•̀ㅂ•́)و✧',
+                }),
+                expect.any(Object),
+            );
+        } finally {
+            randomSpy.mockRestore();
             vi.useRealTimers();
         }
     });

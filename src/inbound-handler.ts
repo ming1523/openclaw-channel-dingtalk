@@ -9,6 +9,7 @@ import {
   isCardInTerminalState,
 } from "./card-service";
 import { resolveAckReactionSetting, resolveGroupConfig } from "./config";
+import { classifyAckReactionEmoji } from "./ack-reaction-classifier";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
@@ -1170,7 +1171,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           accountId,
           agentId: route.agentId,
         });
-  const shouldAttachAckReaction = Boolean(ackReaction);
+  const resolvedAckReaction =
+    ackReaction === "emoji" ? classifyAckReactionEmoji(content.text).emoji : ackReaction;
+  const shouldAttachAckReaction = Boolean(resolvedAckReaction);
   let ackReactionAttached = false;
   let ackReactionAttachedAt = 0;
 
@@ -1181,6 +1184,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         msgId: data.msgId,
         conversationId: groupId,
         robotCode: data.robotCode,
+        reactionName: resolvedAckReaction,
       },
       log,
     );
@@ -1469,6 +1473,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
             msgId: data.msgId,
             conversationId: groupId,
             robotCode: data.robotCode,
+            reactionName: resolvedAckReaction,
           },
           log,
         );

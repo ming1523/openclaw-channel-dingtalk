@@ -6,8 +6,6 @@ import { formatDingTalkErrorPayloadLog, getProxyBypassOption } from "./utils";
 // DingTalk currently exposes a dedicated native "thinking" reaction flow rather than
 // a generic arbitrary-emoji reaction API for this plugin path.
 export const DINGTALK_NATIVE_ACK_REACTION = "🤔思考中";
-
-const THINKING_EMOTION_NAME = DINGTALK_NATIVE_ACK_REACTION;
 const THINKING_EMOTION_ID = "2659900";
 const THINKING_EMOTION_BACKGROUND_ID = "im_bg_1";
 const THINKING_REACTION_RECALL_DELAYS_MS = [0, 1500, 5000] as const;
@@ -22,6 +20,7 @@ type AckReactionTarget = {
   msgId: string;
   conversationId: string;
   robotCode?: string;
+  reactionName?: string;
 };
 
 export async function attachNativeAckReaction(
@@ -30,6 +29,8 @@ export async function attachNativeAckReaction(
   log?: AckReactionLogger,
 ): Promise<boolean> {
   const robotCode = (data.robotCode || config.robotCode || config.clientId || "").trim();
+  const reactionName =
+    (data.reactionName || DINGTALK_NATIVE_ACK_REACTION).trim() || DINGTALK_NATIVE_ACK_REACTION;
   if (!robotCode || !data.msgId || !data.conversationId) {
     return false;
   }
@@ -43,11 +44,11 @@ export async function attachNativeAckReaction(
         openMsgId: data.msgId,
         openConversationId: data.conversationId,
         emotionType: 2,
-        emotionName: THINKING_EMOTION_NAME,
+        emotionName: reactionName,
         textEmotion: {
           emotionId: THINKING_EMOTION_ID,
-          emotionName: THINKING_EMOTION_NAME,
-          text: THINKING_EMOTION_NAME,
+          emotionName: reactionName,
+          text: reactionName,
           backgroundId: THINKING_EMOTION_BACKGROUND_ID,
         },
       },
@@ -76,6 +77,8 @@ async function recallNativeAckReaction(
   log?: AckReactionLogger,
 ): Promise<boolean> {
   const robotCode = (data.robotCode || config.robotCode || config.clientId || "").trim();
+  const reactionName =
+    (data.reactionName || DINGTALK_NATIVE_ACK_REACTION).trim() || DINGTALK_NATIVE_ACK_REACTION;
   if (!robotCode || !data.msgId || !data.conversationId) {
     return false;
   }
@@ -89,11 +92,11 @@ async function recallNativeAckReaction(
         openMsgId: data.msgId,
         openConversationId: data.conversationId,
         emotionType: 2,
-        emotionName: THINKING_EMOTION_NAME,
+        emotionName: reactionName,
         textEmotion: {
           emotionId: THINKING_EMOTION_ID,
-          emotionName: THINKING_EMOTION_NAME,
-          text: THINKING_EMOTION_NAME,
+          emotionName: reactionName,
+          text: reactionName,
           backgroundId: THINKING_EMOTION_BACKGROUND_ID,
         },
       },

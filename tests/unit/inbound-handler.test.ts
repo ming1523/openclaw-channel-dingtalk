@@ -76,10 +76,10 @@ vi.mock('../../src/quoted-file-service', () => ({
 }));
 
 import {
-    downloadMedia,
     handleDingTalkMessage,
     resetProactivePermissionHintStateForTest,
 } from '../../src/inbound-handler';
+import { downloadMedia } from '../../src/media-download-service';
 import { cacheInboundDownloadCode, clearQuotedMsgCacheForTest, getCachedDownloadCode } from '../../src/quoted-msg-cache';
 import { recordProactiveRiskObservation } from '../../src/proactive-risk-registry';
 

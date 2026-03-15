@@ -78,9 +78,14 @@ async function extractTextLikeFile(filePath: string): Promise<AttachmentTextExtr
 async function extractPdf(filePath: string): Promise<AttachmentTextExtractionResult | null> {
   const pdfParseModule = await import("pdf-parse");
   const fileBuffer = await fs.readFile(filePath);
-  const result = await pdfParseModule.default(fileBuffer);
-  const limited = limitExtractedText(result.text || "");
-  return limited ? { ...limited, sourceType: "pdf" } : null;
+  const parser = new pdfParseModule.PDFParse({ data: new Uint8Array(fileBuffer) });
+  try {
+    const result = await parser.getText();
+    const limited = limitExtractedText(result.text || "");
+    return limited ? { ...limited, sourceType: "pdf" } : null;
+  } finally {
+    await parser.destroy();
+  }
 }
 
 async function extractDocx(filePath: string): Promise<AttachmentTextExtractionResult | null> {

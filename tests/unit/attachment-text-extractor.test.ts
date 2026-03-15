@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractAttachmentText } from "../../src/attachment-text-extractor";
 
 vi.mock("pdf-parse", () => ({
-  default: vi.fn(async () => ({ text: "PDF 第一段\nPDF 第二段" })),
+  PDFParse: vi.fn().mockImplementation(() => ({
+    getText: vi.fn(async () => ({ text: "PDF 第一段\nPDF 第二段" })),
+    destroy: vi.fn(async () => undefined),
+  })),
 }));
 
 vi.mock("mammoth", () => ({

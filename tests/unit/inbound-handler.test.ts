@@ -2329,6 +2329,40 @@ describe('inbound-handler', () => {
         expect(mockedAxiosPost).toHaveBeenCalledTimes(1);
     });
 
+    it('handleDingTalkMessage falls back to standalone thinking message when reaction attach fails', async () => {
+        mockedAxiosPost.mockRejectedValueOnce(new Error('reaction failed'));
+
+        await expect(handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                clientId: 'ding_client',
+                clientSecret: 'secret',
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                showThinking: true,
+                showThinkingReaction: true,
+            } as any,
+            data: {
+                msgId: 'm5_reaction_fail_fallback',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any)).resolves.toBeUndefined();
+
+        expect(mockedAxiosPost).toHaveBeenCalledTimes(1);
+        const sentTexts = shared.sendMessageMock.mock.calls.map((call: any[]) => String(call[2] ?? ''));
+        expect(sentTexts).toContain('🤔 思考中，请稍候...');
+    });
+
     it('handleDingTalkMessage ignores thinking and tool card updates when card is already finalized', async () => {
         const runtime = buildRuntime();
         runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi

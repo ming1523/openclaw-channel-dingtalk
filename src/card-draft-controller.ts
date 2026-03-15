@@ -57,7 +57,7 @@ export function createCardDraftController(params: {
 
     return {
         updateReasoning: (text: string) => {
-            if (stopped || failed || phase === "answer") return;
+            if (stopped || failed || phase === "answer") { return; }
             phase = "reasoning";
             const formatted = formatContentForCard(text, "thinking");
             if (formatted) {
@@ -66,7 +66,7 @@ export function createCardDraftController(params: {
         },
 
         updateAnswer: (text: string) => {
-            if (stopped || failed) return;
+            if (stopped || failed) { return; }
             if (phase !== "answer") {
                 if (phase === "reasoning") {
                     loop.resetPending();

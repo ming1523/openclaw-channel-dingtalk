@@ -2652,7 +2652,7 @@ describe('inbound-handler', () => {
         }
     });
 
-    it('handleDingTalkMessage uses classified emoji when ackReaction=emoji', async () => {
+    it('handleDingTalkMessage uses classified emoji when ackReactionStrategy=tone-based', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
         const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -2671,7 +2671,7 @@ describe('inbound-handler', () => {
                     clientSecret: 'secret',
                     dmPolicy: 'open',
                     messageType: 'markdown',
-                    ackReaction: 'emoji',
+                    ackReactionStrategy: 'tone-based',
                 } as any,
                 data: {
                     msgId: 'm5_ackreaction_emoji',

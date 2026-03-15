@@ -148,16 +148,19 @@ describe('DingTalkConfigSchema', () => {
             clientId: 'id',
             clientSecret: 'secret',
             ackReaction: '✅',
+            ackReactionStrategy: 'tone-based',
         }) as { ackReaction?: string };
 
         expect(parsed.ackReaction).toBe('✅');
+        expect((parsed as any).ackReactionStrategy).toBe('tone-based');
 
         const defaults = DingTalkConfigSchema.parse({
             clientId: 'id',
             clientSecret: 'secret',
-        }) as { ackReaction?: string };
+        }) as { ackReaction?: string; ackReactionStrategy?: string };
 
         expect(defaults.ackReaction).toBe('🤔思考中');
+        expect(defaults.ackReactionStrategy).toBe('fixed');
     });
 
     it('exports control-ui-compatible JSON schema nodes', () => {

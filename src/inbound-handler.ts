@@ -1172,7 +1172,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           agentId: route.agentId,
         });
   const resolvedAckReaction =
-    ackReaction === "emoji" ? classifyAckReactionEmoji(content.text).emoji : ackReaction;
+    dingtalkConfig.ackReactionStrategy === "tone-based"
+      ? classifyAckReactionEmoji(content.text).emoji
+      : ackReaction;
   const shouldAttachAckReaction = Boolean(resolvedAckReaction);
   let ackReactionAttached = false;
   let ackReactionAttachedAt = 0;

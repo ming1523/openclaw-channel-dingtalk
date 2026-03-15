@@ -376,6 +376,7 @@ openclaw configure --section channels
       "groupPolicy": "open",
       "journalTTLDays": 7,
       "ackReaction": "🤔思考中", // 给原消息贴处理中的表情反馈；设为 "" 可关闭
+      "ackReactionStrategy": "fixed", // fixed=使用静态 ackReaction；tone-based=按语气自动选表情
       "debug": false,
       "messageType": "markdown", // 或 "card"
       // "mediaMaxMb": 20,  // 可选：接收文件大小上限（MB），默认 5 MB
@@ -418,6 +419,7 @@ openclaw gateway restart
 | `mediaUrlAllowlist`     | string[] | `[]`         | 允许通过 `mediaUrl` 下载的主机/IP/CIDR 白名单 |
 | `journalTTLDays`        | number   | `7`          | `originalMsgId` 文本回溯日志的保留天数      |
 | `ackReaction`          | string   | `"🤔思考中"` | 官方 `ackReaction` 配置入口；设为 `""` 可关闭 |
+| `ackReactionStrategy`  | string   | `"fixed"`    | 钉钉扩展策略：`fixed` 静态表情，`tone-based` 按语气自动选表情 |
 | `messageType`           | string   | `"markdown"` | 消息类型：markdown/card                     |
 | `cardTemplateId`        | string   |              | AI 互动卡片模板 ID（仅当 messageType=card） |
 | `cardTemplateKey`       | string   | `"content"`  | 卡片模板内容字段键（仅当 messageType=card） |
@@ -443,7 +445,9 @@ openclaw gateway restart
 - 该反馈作用于用户原消息，不会额外发送一条“思考中”消息
 - 解析顺序与官方一致：`channels.dingtalk.accounts.<accountId>.ackReaction` -> `channels.dingtalk.ackReaction` -> `messages.ackReaction` -> `agents.list[].identity.emoji` -> 默认 `🤔思考中`
 - 若上述路径都未配置，则回退到默认 `🤔思考中`
-- 当前钉钉实现底层仍走原生“🤔思考中” reaction 能力；因此配置入口已对齐官方，但平台能力暂未扩展为任意 emoji
+- `ackReactionStrategy="fixed"` 时，直接使用解析出的 `ackReaction`
+- `ackReactionStrategy="tone-based"` 时，会按用户当前输入语气自动选表情，忽略静态 `ackReaction` 值
+- 当前钉钉实现底层仍走 `emotion/reply` / `emotion/recall`；`tone-based` 是钉钉侧扩展策略，不是 OpenClaw 跨渠道标准字段
 
 ### 连接鲁棒性配置
 

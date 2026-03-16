@@ -175,6 +175,134 @@ type ReplyChunkInfo = {
   kind?: string;
 };
 
+type ToolExecutionStartEvent = {
+  type: "tool_execution_start";
+  toolName?: string;
+  args?: unknown;
+};
+
+const TOOL_PROGRESS_SILENCE_MS = 55_000;
+const TOOL_PROGRESS_HEARTBEAT_INTERVAL_MS = 60_000;
+const TOOL_PROGRESS_TEXT_MAX_CHARS = 180;
+
+function truncateProgressText(value: string, maxChars = TOOL_PROGRESS_TEXT_MAX_CHARS): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function normalizeProgressText(value: string): string {
+  return truncateProgressText(
+    value
+      .replace(/\s+/g, " ")
+      .replace(/^[\-*#>\s]+/, "")
+      .trim(),
+  );
+}
+
+function mergeProgressLeadText(previous: string, incoming?: string): string {
+  if (!incoming) {
+    return previous;
+  }
+  const next = normalizeProgressText(incoming);
+  if (!next) {
+    return previous;
+  }
+  if (!previous) {
+    return next;
+  }
+  if (next.startsWith(previous)) {
+    return next;
+  }
+  if (previous.startsWith(next)) {
+    return previous;
+  }
+  if (next.length < 6) {
+    return previous;
+  }
+  return next;
+}
+
+function readToolArgString(args: unknown, keys: string[]): string | undefined {
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function buildToolProgressLabel(toolName: unknown, args: unknown): string {
+  const normalizedToolName = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
+  switch (normalizedToolName) {
+    case "bash":
+    case "exec":
+    case "process": {
+      const command = readToolArgString(args, ["command", "cmd"]);
+      if (!command) {
+        return "🛠️ 正在执行命令...";
+      }
+      const brewInstall = command.match(/\bbrew\s+install\s+([^\s]+)/i);
+      if (brewInstall?.[1]) {
+        return `📦 正在安装 ${brewInstall[1]}...`;
+      }
+      const npmInstall = command.match(/\b(?:pnpm|npm|yarn)\s+(?:add|install)\s+([^\s]+)/i);
+      if (npmInstall?.[1]) {
+        return `📦 正在安装 ${npmInstall[1]}...`;
+      }
+      const whichLookup = command.match(/\bwhich\s+([^\s]+)/i);
+      if (whichLookup?.[1]) {
+        return `🔍 正在检查 ${whichLookup[1]} 是否已安装...`;
+      }
+      return `🛠️ 正在执行命令: ${truncateProgressText(command, 72)}`;
+    }
+    case "read":
+    case "view": {
+      const filePath = readToolArgString(args, ["path", "file_path"]);
+      return filePath ? `📂 正在读取 ${filePath}...` : "📂 正在读取文件...";
+    }
+    case "write":
+    case "edit":
+    case "patch": {
+      const filePath = readToolArgString(args, ["path", "file_path"]);
+      return filePath ? `✍️ 正在修改 ${filePath}...` : "✍️ 正在修改文件...";
+    }
+    case "web_search":
+    case "search":
+    case "browser.search":
+    case "browser_search": {
+      const query = readToolArgString(args, ["query", "q", "search"]);
+      return query ? `🌐 正在搜索「${truncateProgressText(query, 40)}」...` : "🌐 正在搜索信息...";
+    }
+    case "fetch":
+    case "open":
+    case "open_url":
+    case "browser.open":
+    case "browser_open": {
+      const url = readToolArgString(args, ["url", "href", "link"]);
+      return url ? `🔗 正在获取 ${truncateProgressText(url, 56)}...` : "🔗 正在获取页面...";
+    }
+    default:
+      return normalizedToolName
+        ? `🛠️ 正在调用 ${normalizedToolName}...`
+        : "🛠️ 正在调用工具...";
+  }
+}
+
+function resolveToolProgressText(latestAssistantLeadText: string, toolName: unknown, args: unknown): string {
+  const leadText = normalizeProgressText(latestAssistantLeadText);
+  if (leadText && leadText.length >= 6) {
+    return leadText;
+  }
+  return buildToolProgressLabel(toolName, args);
+}
+
 /**
  * Download DingTalk media file via runtime media service (sandbox-compatible).
  * Files are stored in the global media inbound directory.
@@ -1287,6 +1415,12 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
+  let progressStartedAt = 0;
+  let lastProgressAt = 0;
+  let lastProgressText = "";
+  let progressDisposed = false;
+  let progressHeartbeatInFlight = false;
+  let progressHeartbeatTimer: NodeJS.Timeout | undefined;
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     if (!ackReactionAttached && shouldAttachAckReaction) {
@@ -1298,8 +1432,93 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       : undefined;
     let cardFinalized = false;
     let finalTextForFallback: string | undefined;
+    let latestAssistantLeadText = "";
+
+    const emitProgress = async (text: string) => {
+      const normalizedText = normalizeProgressText(text);
+      if (!normalizedText || progressDisposed) {
+        return;
+      }
+      if (normalizedText === lastProgressText) {
+        lastProgressAt = Date.now();
+        return;
+      }
+      const sendResult = await sendMessage(dingtalkConfig, to, normalizedText, {
+        sessionWebhook,
+        atUserId: !isDirect ? senderId : null,
+        log,
+        accountId,
+        storePath,
+        conversationId: groupId,
+      });
+      if (!sendResult.ok) {
+        throw new Error(sendResult.error || "Progress message send failed");
+      }
+      const now = Date.now();
+      if (progressStartedAt === 0) {
+        progressStartedAt = now;
+      }
+      lastProgressAt = now;
+      lastProgressText = normalizedText;
+    };
+
+    const maybeHandleAgentEvent = async (event: unknown) => {
+      const toolEvent = event as ToolExecutionStartEvent | undefined;
+      if (toolEvent?.type !== "tool_execution_start") {
+        return;
+      }
+      const progressText = resolveToolProgressText(
+        latestAssistantLeadText,
+        toolEvent.toolName,
+        toolEvent.args,
+      );
+      latestAssistantLeadText = "";
+      await emitProgress(progressText);
+    };
 
     try {
+      progressHeartbeatTimer = setInterval(() => {
+        if (progressDisposed || progressHeartbeatInFlight || progressStartedAt === 0 || lastProgressAt === 0) {
+          return;
+        }
+        const elapsedSinceLastProgress = Date.now() - lastProgressAt;
+        if (elapsedSinceLastProgress < TOOL_PROGRESS_SILENCE_MS) {
+          return;
+        }
+        progressHeartbeatInFlight = true;
+        void emitProgress(
+          `⏳ 处理中，已用时约 ${Math.max(1, Math.round((Date.now() - progressStartedAt) / 1000))} 秒...`,
+        ).catch((err: any) => {
+          log?.warn?.(`[DingTalk] Progress heartbeat send failed: ${err.message}`);
+          if (err?.response?.data !== undefined) {
+            log?.warn?.(formatDingTalkErrorPayloadLog("inbound.progressHeartbeat", err.response.data));
+          }
+        }).finally(() => {
+          progressHeartbeatInFlight = false;
+        });
+      }, TOOL_PROGRESS_HEARTBEAT_INTERVAL_MS);
+
+      const replyOptions: Record<string, unknown> = {
+        disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
+
+        onPartialReply: (payload: ReplyStreamPayload) => {
+          latestAssistantLeadText = mergeProgressLeadText(latestAssistantLeadText, payload.text);
+          if (dingtalkConfig.cardRealTimeStream && controller && payload.text) {
+            controller.updateAnswer(payload.text);
+          }
+        },
+
+        onAgentEvent: maybeHandleAgentEvent,
+
+        onReasoningStream: controller
+          ? (payload: ReplyStreamPayload) => {
+              if (payload.text) {
+                controller.updateReasoning(payload.text);
+              }
+            }
+          : undefined,
+      };
+
       await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg,
@@ -1458,25 +1677,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
             }
           },
         },
-        replyOptions: {
-          disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
-
-          onPartialReply: dingtalkConfig.cardRealTimeStream && controller
-            ? (payload: ReplyStreamPayload) => {
-                if (payload.text) {
-                  controller.updateAnswer(payload.text);
-                }
-              }
-            : undefined,
-
-          onReasoningStream: controller
-            ? (payload: ReplyStreamPayload) => {
-                if (payload.text) {
-                  controller.updateReasoning(payload.text);
-                }
-              }
-            : undefined,
-        },
+        replyOptions: replyOptions as any,
       });
     } catch (dispatchErr: any) {
       if (useCardMode && currentAICard && !isCardInTerminalState(currentAICard.state)) {
@@ -1551,6 +1752,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       }
     }
   } finally {
+    progressDisposed = true;
+    if (progressHeartbeatTimer) {
+      clearInterval(progressHeartbeatTimer);
+    }
     releaseSessionLock();
     if (ackReactionAttached) {
       void (async () => {

@@ -2864,6 +2864,175 @@ describe('inbound-handler', () => {
         }
     });
 
+    it('handleDingTalkMessage sends tool progress message from assistant lead text before final reply', async () => {
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                replyOptions?.onPartialReply?.({ text: '我先搜索一下最新配置，然后给你一个准确结论' });
+                await replyOptions?.onAgentEvent?.({
+                    type: 'tool_execution_start',
+                    toolName: 'web_search',
+                    args: { query: 'ackReaction docs' },
+                });
+                await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                ackReaction: '',
+            } as any,
+            data: {
+                msgId: 'm5_tool_progress_markdown',
+                msgtype: 'text',
+                text: { content: '帮我看看最新配置' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendMessageMock).toHaveBeenNthCalledWith(
+            1,
+            expect.anything(),
+            'user_1',
+            '我先搜索一下最新配置，然后给你一个准确结论',
+            expect.objectContaining({
+                sessionWebhook: 'https://session.webhook',
+            }),
+        );
+        expect(shared.sendMessageMock).toHaveBeenNthCalledWith(
+            2,
+            expect.anything(),
+            'user_1',
+            'final output',
+            expect.anything(),
+        );
+    });
+
+    it('handleDingTalkMessage reuses the same progress message path in card mode', async () => {
+        const card = { cardInstanceId: 'card_progress_same_path', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                await replyOptions?.onAgentEvent?.({
+                    type: 'tool_execution_start',
+                    toolName: 'read',
+                    args: { path: '/tmp/config.json' },
+                });
+                await dispatcherOptions.deliver({ text: 'tool output' }, { kind: 'tool' });
+                await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                dmPolicy: 'open',
+                messageType: 'card',
+                ackReaction: '',
+            } as any,
+            data: {
+                msgId: 'm5_tool_progress_card',
+                msgtype: 'text',
+                text: { content: '读取一下配置' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendMessageMock).toHaveBeenNthCalledWith(
+            1,
+            expect.anything(),
+            'user_1',
+            '📂 正在读取 /tmp/config.json...',
+            expect.objectContaining({
+                sessionWebhook: 'https://session.webhook',
+            }),
+        );
+        expect(shared.sendMessageMock).toHaveBeenNthCalledWith(
+            2,
+            expect.anything(),
+            'user_1',
+            'tool output',
+            expect.objectContaining({
+                card,
+                cardUpdateMode: 'append',
+            }),
+        );
+    });
+
+    it('handleDingTalkMessage sends heartbeat progress updates during long tool execution', async () => {
+        vi.useFakeTimers();
+        try {
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ replyOptions }) => {
+                    await replyOptions?.onAgentEvent?.({
+                        type: 'tool_execution_start',
+                        toolName: 'read',
+                        args: { path: '/tmp/slow.txt' },
+                    });
+                    await vi.advanceTimersByTimeAsync(60_000);
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: '',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_heartbeat',
+                    msgtype: 'text',
+                    text: { content: '慢一点也没事' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+
+            const sentTexts = shared.sendMessageMock.mock.calls.map((call: any[]) => String(call[2] ?? ''));
+            expect(sentTexts).toContain('📂 正在读取 /tmp/slow.txt...');
+            expect(sentTexts.some((text: string) => text.includes('处理中，已用时约 60 秒'))).toBe(true);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('handleDingTalkMessage attaches native ack reaction in card mode', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);

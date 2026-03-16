@@ -90,7 +90,10 @@ describe('card-service', () => {
         expect(card?.processQueryKey).toBe('carrier_1');
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
         const body = mockedAxios.post.mock.calls[0]?.[1];
-        expect(body.cardData?.cardParamMap).toEqual({ content: '' });
+        expect(body.cardData?.cardParamMap).toEqual({
+            config: '{"autoLayout":true,"enableForward":true}',
+            content: '',
+        });
         expect(body.imGroupOpenDeliverModel).toEqual({ robotCode: 'id' });
     });
 
@@ -368,13 +371,27 @@ describe('card-service', () => {
         expect(card.state).toBe(AICardStatus.FINISHED);
     });
 
-    it('formatContentForCard truncates and annotates content', () => {
+    it('formatContentForCard preserves full content without truncation', () => {
         const content = `${'x'.repeat(510)}`;
         const result = formatContentForCard(content, 'thinking');
 
-        expect(result).toContain('思考中');
-        expect(result).toContain('> ');
-        expect(result.endsWith('…')).toBe(true);
+        expect(result).toContain('🤔 **思考中**');
+        expect(result).toContain('x'.repeat(510));
+        expect(result).not.toContain('…');
+        expect(result.startsWith('🤔 **思考中**\n\n')).toBe(true);
+    });
+
+    it('formatContentForCard renders short content without truncation', () => {
+        const result = formatContentForCard('line1\nline2', 'thinking');
+
+        expect(result).toBe('🤔 **思考中**\n\nline1\nline2');
+    });
+
+    it('formatContentForCard uses tool emoji and label', () => {
+        const result = formatContentForCard('tool output', 'tool');
+
+        expect(result).toContain('🛠️ **工具执行**');
+        expect(result).toContain('tool output');
     });
 
     it('refreshes aged token before streaming', async () => {
@@ -508,7 +525,16 @@ describe('card-service', () => {
     });
 
     it('sendProactiveCardText does not persist pending card state', async () => {
-        mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+        mockedAxios.post.mockResolvedValueOnce({
+            status: 200,
+            data: {
+                result: {
+                    outTrackId: 'track_card_1',
+                    processQueryKey: 'card_process_1',
+                    cardInstanceId: 'card_instance_1',
+                },
+            },
+        });
         mockedAxios.put.mockResolvedValueOnce({ status: 200, data: { ok: true } });
 
         const result = await sendProactiveCardText(
@@ -517,7 +543,12 @@ describe('card-service', () => {
             'proactive done'
         );
 
-        expect(result).toEqual({ ok: true });
+        expect(result).toEqual({
+            ok: true,
+            outTrackId: 'track_card_1',
+            processQueryKey: 'card_process_1',
+            cardInstanceId: 'card_instance_1',
+        });
         expect(mockedAxios.post).toHaveBeenCalledTimes(1);
         expect(mockedAxios.put).toHaveBeenCalledTimes(1);
         expect(fs.existsSync(stateFilePath)).toBe(false);
@@ -553,5 +584,43 @@ describe('card-service', () => {
         expect(fs.existsSync(stateFilePath)).toBe(true);
         const namespaced = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
         expect(namespaced.pendingCards).toHaveLength(0);
+    });
+
+    it('persists outTrackId for pending cards so recovery finalizes with the original tracking id', async () => {
+        mockedAxios.post.mockResolvedValueOnce({
+            status: 200,
+            data: {
+                result: {
+                    outTrackId: 'track_distinct_1',
+                    cardInstanceId: 'card_instance_distinct_1',
+                },
+            },
+        });
+        mockedAxios.put.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+
+        const card = await createAICard(
+            { clientId: 'id', clientSecret: 'sec', cardTemplateId: 'tmpl.schema', robotCode: 'id' } as any,
+            'cid_pending_track',
+            undefined,
+            { accountId: 'main', storePath }
+        );
+
+        expect(card?.outTrackId).toBe('track_distinct_1');
+        const persisted = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
+        expect(persisted.pendingCards[0].outTrackId).toBe('track_distinct_1');
+        expect(persisted.pendingCards[0].cardInstanceId).toBe('card_instance_distinct_1');
+
+        mockedAxios.put.mockClear();
+        mockedAxios.put.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+
+        const recovered = await recoverPendingCardsForAccount(
+            { clientId: 'id', clientSecret: 'sec', cardTemplateId: 'tmpl.schema', robotCode: 'id' } as any,
+            'main',
+            storePath
+        );
+
+        expect(recovered).toBe(1);
+        const putBody = mockedAxios.put.mock.calls[0]?.[1];
+        expect(putBody.outTrackId).toBe('track_distinct_1');
     });
 });

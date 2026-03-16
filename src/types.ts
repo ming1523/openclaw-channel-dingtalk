@@ -42,8 +42,8 @@ export interface DingTalkConfig extends OpenClawConfig {
   groupPolicy?: "open" | "allowlist";
   allowFrom?: string[];
   mediaUrlAllowlist?: string[];
-  showThinking?: boolean;
-  thinkingMessage?: string;
+  journalTTLDays?: number;
+  ackReaction?: string;
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;
@@ -71,6 +71,8 @@ export interface DingTalkConfig extends OpenClawConfig {
     enabled?: boolean;
     cooldownHours?: number;
   };
+  /** Enable real-time card streaming (default false, true = 300ms throttled per-token updates) */
+  cardRealTimeStream?: boolean;
   /** AICard degrade duration in milliseconds after trigger errors (default 30m) */
   aicardDegradeMs?: number;
   /** Enable local learning loop (events/reflections/session notes/global rules) */
@@ -102,8 +104,8 @@ export interface DingTalkChannelConfig {
   groupPolicy?: "open" | "allowlist";
   allowFrom?: string[];
   mediaUrlAllowlist?: string[];
-  showThinking?: boolean;
-  thinkingMessage?: string;
+  journalTTLDays?: number;
+  ackReaction?: string;
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;
@@ -130,6 +132,8 @@ export interface DingTalkChannelConfig {
     enabled?: boolean;
     cooldownHours?: number;
   };
+  /** Enable real-time card streaming (default false, true = 300ms throttled per-token updates) */
+  cardRealTimeStream?: boolean;
   /** AICard degrade duration in milliseconds after trigger errors (default 30m) */
   aicardDegradeMs?: number;
   /** Enable local learning loop (events/reflections/session notes/global rules) */
@@ -186,6 +190,14 @@ export interface MediaDownloadResponse {
 export interface MediaFile {
   path: string;
   mimeType: string;
+}
+
+export interface DocInfo {
+  docId: string;
+  title: string;
+  docType: string;
+  creatorId?: string;
+  updatedAt?: number | string;
 }
 
 /**
@@ -298,13 +310,20 @@ export interface SendMessageOptions {
   useMarkdown?: boolean;
   atUserId?: string | null;
   log?: Logger;
+  conversationId?: string;
   mediaPath?: string;
   filePath?: string;
   mediaUrl?: string;
   mediaType?: "image" | "voice" | "video" | "file";
   accountId?: string;
-  cardUpdateMode?: "replace" | "append" | "finalize";
-  cardFinalize?: boolean;
+  storePath?: string;
+  cardUpdateMode?: "append";
+}
+
+export interface DingTalkTrackingMetadata {
+  processQueryKey?: string;
+  outTrackId?: string;
+  cardInstanceId?: string;
 }
 
 /**
@@ -541,6 +560,7 @@ export interface AICardInstance {
   state: AICardState; // Current card state: PROCESSING, INPUTING, FINISHED, FAILED
   config?: DingTalkConfig; // Store config reference for token refresh
   lastStreamedContent?: string;
+  outTrackId?: string;
 }
 
 /**
@@ -660,8 +680,8 @@ export function resolveDingTalkAccount(
       dmPolicy: dingtalk?.dmPolicy,
       groupPolicy: dingtalk?.groupPolicy,
       allowFrom: dingtalk?.allowFrom,
-      showThinking: dingtalk?.showThinking,
-      thinkingMessage: dingtalk?.thinkingMessage,
+      journalTTLDays: dingtalk?.journalTTLDays,
+      ackReaction: dingtalk?.ackReaction,
       debug: dingtalk?.debug,
       messageType: dingtalk?.messageType,
       cardTemplateId: dingtalk?.cardTemplateId,
@@ -676,8 +696,10 @@ export function resolveDingTalkAccount(
       reconnectDeadlineMs: dingtalk?.reconnectDeadlineMs,
       useConnectionManager: dingtalk?.useConnectionManager,
       mediaMaxMb: dingtalk?.mediaMaxMb,
+      keepAlive: dingtalk?.keepAlive,
       bypassProxyForSend: dingtalk?.bypassProxyForSend,
       proactivePermissionHint: dingtalk?.proactivePermissionHint,
+      cardRealTimeStream: dingtalk?.cardRealTimeStream,
       aicardDegradeMs: dingtalk?.aicardDegradeMs,
       learningEnabled: dingtalk?.learningEnabled ?? dingtalk?.feedbackLearningEnabled,
       learningAutoApply: dingtalk?.learningAutoApply ?? dingtalk?.feedbackLearningAutoApply,

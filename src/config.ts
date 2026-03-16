@@ -11,6 +11,24 @@ const WINDOWS_ROOT_DIRECTORIES = new Set([
   "Windows",
   "Documents and Settings",
 ]);
+const DEFAULT_LEARNING_NOTE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function normalizeLearningConfig(
+  config: DingTalkConfig,
+  options: { applyDefaults: boolean },
+): DingTalkConfig {
+  const learningEnabled = config.learningEnabled ?? config.feedbackLearningEnabled;
+  const learningAutoApply = config.learningAutoApply ?? config.feedbackLearningAutoApply;
+  const learningNoteTtlMs = config.learningNoteTtlMs ?? config.feedbackLearningNoteTtlMs;
+  return {
+    ...config,
+    learningEnabled: options.applyDefaults ? learningEnabled ?? false : learningEnabled,
+    learningAutoApply: options.applyDefaults ? learningAutoApply ?? false : learningAutoApply,
+    learningNoteTtlMs: options.applyDefaults
+      ? learningNoteTtlMs ?? DEFAULT_LEARNING_NOTE_TTL_MS
+      : learningNoteTtlMs,
+  };
+}
 
 /**
  * Merge channel-level defaults into an account-specific config.
@@ -21,16 +39,20 @@ export function mergeAccountWithDefaults(
   accountCfg: DingTalkConfig,
 ): DingTalkConfig {
   const { accounts: _accounts, ...defaults } = channelCfg;
+  const normalizedAccountCfg = normalizeLearningConfig(accountCfg, { applyDefaults: false });
   const overrides: Partial<DingTalkConfig> = {};
-  for (const [key, value] of Object.entries(accountCfg)) {
+  for (const [key, value] of Object.entries(normalizedAccountCfg)) {
     if (value !== undefined) {
       Object.assign(overrides, { [key]: value });
     }
   }
-  return {
-    ...defaults,
-    ...overrides,
-  };
+  return normalizeLearningConfig(
+    {
+      ...defaults,
+      ...overrides,
+    },
+    { applyDefaults: true },
+  );
 }
 
 /**
@@ -48,7 +70,15 @@ export function getConfig(cfg: OpenClawConfig, accountId?: string): DingTalkConf
     return mergeAccountWithDefaults(dingtalkCfg, dingtalkCfg.accounts[accountId]);
   }
 
-  return dingtalkCfg;
+  if (accountId) {
+    return normalizeLearningConfig(dingtalkCfg, { applyDefaults: true });
+  }
+
+  if (dingtalkCfg.accounts && Object.keys(dingtalkCfg.accounts).length > 0) {
+    return dingtalkCfg;
+  }
+
+  return normalizeLearningConfig(dingtalkCfg, { applyDefaults: true });
 }
 
 export function isConfigured(cfg: OpenClawConfig, accountId?: string): boolean {
@@ -122,6 +152,48 @@ export function resolveGroupConfig(
     return undefined;
   }
   return groups[groupId] || groups["*"] || undefined;
+}
+
+function hasOwn(obj: unknown, key: string): boolean {
+  return typeof obj === "object" && obj !== null && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function resolveAgentIdentityEmoji(cfg: OpenClawConfig, agentId?: string | null): string | undefined {
+  const targetAgentId = String(agentId || "").trim();
+  if (!targetAgentId) {
+    return undefined;
+  }
+  const agents = Array.isArray((cfg as any)?.agents?.list) ? (cfg as any).agents.list : [];
+  const agent = agents.find((entry: any) => String(entry?.id || "").trim() === targetAgentId);
+  const emoji = typeof agent?.identity?.emoji === "string" ? agent.identity.emoji.trim() : "";
+  return emoji || undefined;
+}
+
+export function resolveAckReactionSetting(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  agentId?: string | null;
+}): string | undefined {
+  const dingtalk = (params.cfg?.channels as any)?.dingtalk;
+  const accountId = String(params.accountId || "").trim();
+  const accountConfig =
+    accountId && dingtalk?.accounts && typeof dingtalk.accounts === "object"
+      ? dingtalk.accounts[accountId]
+      : undefined;
+
+  if (hasOwn(accountConfig, "ackReaction")) {
+    return typeof accountConfig.ackReaction === "string" ? accountConfig.ackReaction.trim() : "";
+  }
+  if (hasOwn(dingtalk, "ackReaction")) {
+    return typeof dingtalk.ackReaction === "string" ? dingtalk.ackReaction.trim() : "";
+  }
+
+  const messages = (params.cfg as any)?.messages;
+  if (hasOwn(messages, "ackReaction")) {
+    return typeof messages.ackReaction === "string" ? messages.ackReaction.trim() : "";
+  }
+
+  return resolveAgentIdentityEmoji(params.cfg, params.agentId);
 }
 
 /**

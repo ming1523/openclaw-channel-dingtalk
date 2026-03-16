@@ -1,7 +1,14 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { getConfig, isConfigured, mergeAccountWithDefaults, resolveRelativePath, resolveUserPath } from '../../src/config';
+import {
+    getConfig,
+    isConfigured,
+    mergeAccountWithDefaults,
+    resolveAckReactionSetting,
+    resolveRelativePath,
+    resolveUserPath,
+} from '../../src/config';
 
 describe('config advanced', () => {
     const originalPlatform = process.platform;
@@ -38,9 +45,10 @@ describe('config advanced', () => {
                     clientSecret: 'top_sec',
                     dmPolicy: 'allowlist',
                     allowFrom: ['user1'],
-                    showThinking: false,
+                    ackReaction: '',
                     messageType: 'card',
                     cardTemplateId: 'tpl.schema',
+                    journalTTLDays: 9,
                     debug: true,
                     accounts: {
                         bot1: { clientId: 'bot1_id', clientSecret: 'bot1_sec' },
@@ -54,9 +62,10 @@ describe('config advanced', () => {
         expect(resolved.clientSecret).toBe('bot1_sec');
         expect(resolved.dmPolicy).toBe('allowlist');
         expect(resolved.allowFrom).toEqual(['user1']);
-        expect(resolved.showThinking).toBe(false);
+        expect(resolved.ackReaction).toBe('');
         expect(resolved.messageType).toBe('card');
         expect(resolved.cardTemplateId).toBe('tpl.schema');
+        expect(resolved.journalTTLDays).toBe(9);
         expect(resolved.debug).toBe(true);
     });
 
@@ -148,6 +157,109 @@ describe('config advanced', () => {
         expect(merged.dmPolicy).toBe('allowlist');
         expect(merged.messageType).toBe('markdown');
         expect((merged as any).accounts).toBeUndefined();
+    });
+
+    it('resolveAckReactionSetting follows official precedence and preserves explicit disables', () => {
+        expect(resolveAckReactionSetting({
+            cfg: {
+                channels: {
+                    dingtalk: {
+                        ackReaction: 'channel',
+                        accounts: {
+                            main: { ackReaction: '' },
+                        },
+                    },
+                },
+                messages: { ackReaction: 'message' },
+                agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
+            } as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBe('');
+
+        expect(resolveAckReactionSetting({
+            cfg: {
+                channels: {
+                    dingtalk: {
+                        ackReaction: 'channel',
+                    },
+                },
+                messages: { ackReaction: 'message' },
+                agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
+            } as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBe('channel');
+
+        expect(resolveAckReactionSetting({
+            cfg: {
+                messages: { ackReaction: 'message' },
+                agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
+            } as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBe('message');
+
+        expect(resolveAckReactionSetting({
+            cfg: {
+                agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
+            } as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBe('👀');
+
+        expect(resolveAckReactionSetting({
+            cfg: {} as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBeUndefined();
+    });
+
+    it('normalizes legacy learning keys in single-account config', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    clientId: 'top_id',
+                    clientSecret: 'top_sec',
+                    feedbackLearningEnabled: true,
+                    feedbackLearningAutoApply: true,
+                    feedbackLearningNoteTtlMs: 120000,
+                },
+            },
+        } as any;
+
+        const resolved = getConfig(cfg);
+        expect(resolved.learningEnabled).toBe(true);
+        expect(resolved.learningAutoApply).toBe(true);
+        expect(resolved.learningNoteTtlMs).toBe(120000);
+    });
+
+    it('normalizes account-level legacy learning keys with account override precedence', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    clientId: 'top_id',
+                    clientSecret: 'top_sec',
+                    learningEnabled: true,
+                    learningAutoApply: true,
+                    learningNoteTtlMs: 3600000,
+                    accounts: {
+                        bot1: {
+                            clientId: 'bot1_id',
+                            clientSecret: 'bot1_sec',
+                            feedbackLearningEnabled: true,
+                            feedbackLearningAutoApply: false,
+                            feedbackLearningNoteTtlMs: 180000,
+                        },
+                    },
+                },
+            },
+        } as any;
+
+        const resolved = getConfig(cfg, 'bot1');
+        expect(resolved.learningEnabled).toBe(true);
+        expect(resolved.learningAutoApply).toBe(false);
+        expect(resolved.learningNoteTtlMs).toBe(180000);
     });
 
     it('recovers Windows root-relative workspace paths only on win32', () => {

@@ -175,54 +175,18 @@ type ReplyChunkInfo = {
   kind?: string;
 };
 
-type ToolExecutionStartEvent = {
-  type: "tool_execution_start";
-  toolName?: string;
-  args?: unknown;
+type RuntimeToolStartEvent = {
+  stream?: string;
+  data?: {
+    phase?: string;
+    name?: string;
+    args?: unknown;
+  };
 };
 
-const TOOL_PROGRESS_SILENCE_MS = 55_000;
-const TOOL_PROGRESS_HEARTBEAT_INTERVAL_MS = 60_000;
-const TOOL_PROGRESS_TEXT_MAX_CHARS = 180;
-
-function truncateProgressText(value: string, maxChars = TOOL_PROGRESS_TEXT_MAX_CHARS): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
-
-function normalizeProgressText(value: string): string {
-  return truncateProgressText(
-    value
-      .replace(/\s+/g, " ")
-      .replace(/^[\-*#>\s]+/, "")
-      .trim(),
-  );
-}
-
-function mergeProgressLeadText(previous: string, incoming?: string): string {
-  if (!incoming) {
-    return previous;
-  }
-  const next = normalizeProgressText(incoming);
-  if (!next) {
-    return previous;
-  }
-  if (!previous) {
-    return next;
-  }
-  if (next.startsWith(previous)) {
-    return next;
-  }
-  if (previous.startsWith(next)) {
-    return previous;
-  }
-  if (next.length < 6) {
-    return previous;
-  }
-  return next;
-}
+const TOOL_REACTION_SILENCE_MS = 55_000;
+const TOOL_REACTION_HEARTBEAT_INTERVAL_MS = 60_000;
+const TOOL_HEARTBEAT_REACTION = "⏳";
 
 function readToolArgString(args: unknown, keys: string[]): string | undefined {
   if (!args || typeof args !== "object") {
@@ -238,7 +202,7 @@ function readToolArgString(args: unknown, keys: string[]): string | undefined {
   return undefined;
 }
 
-function buildToolProgressLabel(toolName: unknown, args: unknown): string {
+function resolveToolProgressReaction(toolName: unknown, args: unknown): string {
   const normalizedToolName = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
   switch (normalizedToolName) {
     case "bash":
@@ -246,61 +210,37 @@ function buildToolProgressLabel(toolName: unknown, args: unknown): string {
     case "process": {
       const command = readToolArgString(args, ["command", "cmd"]);
       if (!command) {
-        return "🛠️ 正在执行命令...";
+        return "🛠️";
       }
-      const brewInstall = command.match(/\bbrew\s+install\s+([^\s]+)/i);
-      if (brewInstall?.[1]) {
-        return `📦 正在安装 ${brewInstall[1]}...`;
+      if (/\bbrew\s+install\s+/i.test(command) || /\b(?:pnpm|npm|yarn)\s+(?:add|install)\s+/i.test(command)) {
+        return "📦";
       }
-      const npmInstall = command.match(/\b(?:pnpm|npm|yarn)\s+(?:add|install)\s+([^\s]+)/i);
-      if (npmInstall?.[1]) {
-        return `📦 正在安装 ${npmInstall[1]}...`;
+      if (/\bwhich\s+/i.test(command)) {
+        return "🔍";
       }
-      const whichLookup = command.match(/\bwhich\s+([^\s]+)/i);
-      if (whichLookup?.[1]) {
-        return `🔍 正在检查 ${whichLookup[1]} 是否已安装...`;
-      }
-      return `🛠️ 正在执行命令: ${truncateProgressText(command, 72)}`;
+      return "🛠️";
     }
     case "read":
-    case "view": {
-      const filePath = readToolArgString(args, ["path", "file_path"]);
-      return filePath ? `📂 正在读取 ${filePath}...` : "📂 正在读取文件...";
-    }
+    case "view":
+      return "📂";
     case "write":
     case "edit":
-    case "patch": {
-      const filePath = readToolArgString(args, ["path", "file_path"]);
-      return filePath ? `✍️ 正在修改 ${filePath}...` : "✍️ 正在修改文件...";
-    }
+    case "patch":
+      return "✍️";
     case "web_search":
     case "search":
     case "browser.search":
-    case "browser_search": {
-      const query = readToolArgString(args, ["query", "q", "search"]);
-      return query ? `🌐 正在搜索「${truncateProgressText(query, 40)}」...` : "🌐 正在搜索信息...";
-    }
+    case "browser_search":
+      return "🌐";
     case "fetch":
     case "open":
     case "open_url":
     case "browser.open":
-    case "browser_open": {
-      const url = readToolArgString(args, ["url", "href", "link"]);
-      return url ? `🔗 正在获取 ${truncateProgressText(url, 56)}...` : "🔗 正在获取页面...";
-    }
+    case "browser_open":
+      return "🔗";
     default:
-      return normalizedToolName
-        ? `🛠️ 正在调用 ${normalizedToolName}...`
-        : "🛠️ 正在调用工具...";
+      return "🛠️";
   }
-}
-
-function resolveToolProgressText(latestAssistantLeadText: string, toolName: unknown, args: unknown): string {
-  const leadText = normalizeProgressText(latestAssistantLeadText);
-  if (leadText && leadText.length >= 6) {
-    return leadText;
-  }
-  return buildToolProgressLabel(toolName, args);
 }
 
 /**
@@ -1415,12 +1355,14 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
-  let progressStartedAt = 0;
-  let lastProgressAt = 0;
-  let lastProgressText = "";
+  const shouldTrackDynamicAckReaction = ackReaction === "emoji" && shouldAttachAckReaction;
+  let dynamicReactionStartedAt = 0;
+  let lastDynamicReactionAt = 0;
+  let currentAckReaction = resolvedAckReaction;
   let progressDisposed = false;
   let progressHeartbeatInFlight = false;
   let progressHeartbeatTimer: NodeJS.Timeout | undefined;
+  let dynamicReactionUpdatePromise: Promise<void> = Promise.resolve();
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     if (!ackReactionAttached && shouldAttachAckReaction) {
@@ -1432,92 +1374,107 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       : undefined;
     let cardFinalized = false;
     let finalTextForFallback: string | undefined;
-    let latestAssistantLeadText = "";
 
-    const emitProgress = async (text: string) => {
-      const normalizedText = normalizeProgressText(text);
-      if (!normalizedText || progressDisposed) {
+    const updateDynamicAckReaction = async (nextReaction: string) => {
+      const normalizedReaction = typeof nextReaction === "string" ? nextReaction.trim() : "";
+      if (
+        !normalizedReaction
+        || progressDisposed
+        || !shouldTrackDynamicAckReaction
+        || !ackReactionAttached
+      ) {
         return;
       }
-      if (normalizedText === lastProgressText) {
-        lastProgressAt = Date.now();
+      if (normalizedReaction === currentAckReaction) {
+        if (dynamicReactionStartedAt === 0) {
+          dynamicReactionStartedAt = Date.now();
+        }
+        lastDynamicReactionAt = Date.now();
         return;
       }
-      const sendResult = await sendMessage(dingtalkConfig, to, normalizedText, {
-        sessionWebhook,
-        atUserId: !isDirect ? senderId : null,
+      const previousReaction = currentAckReaction;
+      ackReactionAttached = false;
+      await recallNativeAckReactionWithRetry(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          reactionName: previousReaction,
+        },
         log,
-        accountId,
-        storePath,
-        conversationId: groupId,
-      });
-      if (!sendResult.ok) {
-        throw new Error(sendResult.error || "Progress message send failed");
+      );
+      const attached = await attachNativeAckReaction(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          reactionName: normalizedReaction,
+        },
+        log,
+      );
+      if (!attached) {
+        return;
       }
-      const now = Date.now();
-      if (progressStartedAt === 0) {
-        progressStartedAt = now;
+      ackReactionAttached = true;
+      currentAckReaction = normalizedReaction;
+      ackReactionAttachedAt = Date.now();
+      if (dynamicReactionStartedAt === 0) {
+        dynamicReactionStartedAt = ackReactionAttachedAt;
       }
-      lastProgressAt = now;
-      lastProgressText = normalizedText;
+      lastDynamicReactionAt = ackReactionAttachedAt;
+    };
+
+    const queueDynamicAckReactionUpdate = (nextReaction: string) => {
+      dynamicReactionUpdatePromise = dynamicReactionUpdatePromise
+        .then(() => updateDynamicAckReaction(nextReaction))
+        .catch((err: any) => {
+          log?.warn?.(`[DingTalk] Dynamic ack reaction update failed: ${err.message}`);
+        });
+      return dynamicReactionUpdatePromise;
     };
 
     const maybeHandleAgentEvent = async (event: unknown) => {
-      const toolEvent = event as ToolExecutionStartEvent | undefined;
-      if (toolEvent?.type !== "tool_execution_start") {
+      const toolEvent = event as RuntimeToolStartEvent | undefined;
+      if (toolEvent?.stream !== "tool" || toolEvent?.data?.phase !== "start") {
         return;
       }
-      const progressText = resolveToolProgressText(
-        latestAssistantLeadText,
-        toolEvent.toolName,
-        toolEvent.args,
+      await queueDynamicAckReactionUpdate(
+        resolveToolProgressReaction(toolEvent.data?.name, toolEvent.data?.args),
       );
-      latestAssistantLeadText = "";
-      await emitProgress(progressText);
     };
+
+    const runtimeEvents = (rt as typeof rt & {
+      events?: {
+        onAgentEvent?: (listener: (event: unknown) => void) => (() => void);
+      };
+    }).events;
+    const unsubscribeAgentEvents = shouldTrackDynamicAckReaction && runtimeEvents?.onAgentEvent
+      ? runtimeEvents.onAgentEvent((event: unknown) => {
+          void maybeHandleAgentEvent(event).catch((err: any) => {
+            log?.warn?.(`[DingTalk] Dynamic ack reaction event handling failed: ${err.message}`);
+          });
+        })
+      : () => {};
 
     try {
       progressHeartbeatTimer = setInterval(() => {
-        if (progressDisposed || progressHeartbeatInFlight || progressStartedAt === 0 || lastProgressAt === 0) {
+        if (
+          progressDisposed
+          || progressHeartbeatInFlight
+          || !shouldTrackDynamicAckReaction
+          || dynamicReactionStartedAt === 0
+          || lastDynamicReactionAt === 0
+        ) {
           return;
         }
-        const elapsedSinceLastProgress = Date.now() - lastProgressAt;
-        if (elapsedSinceLastProgress < TOOL_PROGRESS_SILENCE_MS) {
+        if (Date.now() - lastDynamicReactionAt < TOOL_REACTION_SILENCE_MS) {
           return;
         }
         progressHeartbeatInFlight = true;
-        void emitProgress(
-          `⏳ 处理中，已用时约 ${Math.max(1, Math.round((Date.now() - progressStartedAt) / 1000))} 秒...`,
-        ).catch((err: any) => {
-          log?.warn?.(`[DingTalk] Progress heartbeat send failed: ${err.message}`);
-          if (err?.response?.data !== undefined) {
-            log?.warn?.(formatDingTalkErrorPayloadLog("inbound.progressHeartbeat", err.response.data));
-          }
-        }).finally(() => {
+        void queueDynamicAckReactionUpdate(TOOL_HEARTBEAT_REACTION).finally(() => {
           progressHeartbeatInFlight = false;
         });
-      }, TOOL_PROGRESS_HEARTBEAT_INTERVAL_MS);
-
-      const replyOptions: Record<string, unknown> = {
-        disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
-
-        onPartialReply: (payload: ReplyStreamPayload) => {
-          latestAssistantLeadText = mergeProgressLeadText(latestAssistantLeadText, payload.text);
-          if (dingtalkConfig.cardRealTimeStream && controller && payload.text) {
-            controller.updateAnswer(payload.text);
-          }
-        },
-
-        onAgentEvent: maybeHandleAgentEvent,
-
-        onReasoningStream: controller
-          ? (payload: ReplyStreamPayload) => {
-              if (payload.text) {
-                controller.updateReasoning(payload.text);
-              }
-            }
-          : undefined,
-      };
+      }, TOOL_REACTION_HEARTBEAT_INTERVAL_MS);
 
       await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
@@ -1577,41 +1534,36 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
                   ? [richPayload.mediaUrl]
                   : [];
 
+              // In card mode, deliver(final) must always reach finalize even with empty text
+              // (e.g. bot sent a file via tool with no accompanying text).
               if ((typeof textToSend !== "string" || textToSend.length === 0) && mediaUrls.length === 0) {
-                return;
+                if (useCardMode && currentAICard && info?.kind === "final") {
+                  // fall through to card finalize below
+                } else {
+                  return;
+                }
               }
 
               // ---- card mode: final ----
+              // Do NOT finalize or stop the controller here — runtime calls
+              // deliver(final) once per assistant turn, so there may be more
+              // turns coming after tool calls. Finalization is deferred to
+              // step 5 (post-dispatch) where the full accumulated content
+              // is available.
               if (useCardMode && currentAICard && info?.kind === "final") {
-                const rawFinalText = typeof textToSend === "string" ? textToSend : "";
-                await controller!.flush();
-                await controller!.waitForInFlight();
-                controller!.stop();
+                log?.info?.(
+                  `[DingTalk][Finalize] deliver(final) received — cardState=${currentAICard.state} ` +
+                  `textLen=${typeof textToSend === "string" ? textToSend.length : "null"} ` +
+                  `mediaUrls=${mediaUrls.length} ` +
+                  `lastAnswer="${(controller?.getLastAnswerContent() ?? "").slice(0, 80)}" ` +
+                  `lastContent="${(controller?.getLastContent() ?? "").slice(0, 80)}"`,
+                );
                 if (mediaUrls.length > 0) {
                   await deliverMediaAttachments(mediaUrls);
                 }
-                const finalText = controller!.getLastContent() || rawFinalText;
-                if (!isCardInTerminalState(currentAICard.state) && !controller!.isFailed()) {
-                  try {
-                    await finishAICard(currentAICard, finalText, log);
-                    cardFinalized = true;
-                  } catch (finalizeErr: any) {
-                    log?.debug?.(`[DingTalk] AI Card finalization failed in deliver: ${finalizeErr.message}`);
-                    if (finalizeErr?.response?.data !== undefined) {
-                      log?.debug?.(formatDingTalkErrorPayloadLog("inbound.cardFinalize", finalizeErr.response.data));
-                    }
-                    if (currentAICard.state !== AICardStatus.FINISHED) {
-                      currentAICard.state = AICardStatus.FAILED;
-                      currentAICard.lastUpdated = Date.now();
-                    }
-                    finalTextForFallback = finalText;
-                  }
-                } else if (currentAICard.state === AICardStatus.FINISHED) {
-                  log?.info?.("[DingTalk] Card already FINISHED before deliver(final), skipping duplicate finalize");
-                  cardFinalized = true;
-                } else {
-                  log?.info?.("[DingTalk] Card failed before deliver(final), deferring markdown fallback to post-dispatch");
-                  finalTextForFallback = finalText;
+                const rawFinalText = typeof textToSend === "string" ? textToSend : "";
+                if (rawFinalText) {
+                  finalTextForFallback = rawFinalText;
                 }
                 return;
               }
@@ -1677,9 +1629,33 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
             }
           },
         },
-        replyOptions: replyOptions as any,
+        replyOptions: {
+          disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
+
+          onAssistantMessageStart: controller
+            ? () => { controller.notifyNewAssistantTurn(); }
+            : undefined,
+
+          onPartialReply: dingtalkConfig.cardRealTimeStream && controller
+            ? (payload: ReplyStreamPayload) => {
+                if (payload.text) {
+                  controller.updateAnswer(payload.text);
+                }
+              }
+            : undefined,
+
+          onReasoningStream: controller
+            ? (payload: ReplyStreamPayload) => {
+                if (payload.text) {
+                  controller.updateReasoning(payload.text);
+                }
+              }
+            : undefined,
+        },
       });
+      unsubscribeAgentEvents();
     } catch (dispatchErr: any) {
+      unsubscribeAgentEvents();
       if (useCardMode && currentAICard && !isCardInTerminalState(currentAICard.state)) {
         controller!.stop();
         await controller!.waitForInFlight();
@@ -1696,18 +1672,30 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       throw dispatchErr;
     }
 
-    // 5) Fallback finalize: covers queuedFinal=false (tool-only, no final text).
+    // 5) Post-dispatch card finalization.
+    // This is the sole finalize path — deliver(final) defers here because
+    // runtime may call deliver(final) multiple times (once per assistant turn).
+    log?.info?.(
+      `[DingTalk][Finalize] Step 5 entry — useCardMode=${useCardMode} ` +
+      `hasCard=${!!currentAICard} cardFinalized=${cardFinalized} ` +
+      `cardState=${currentAICard?.state ?? "N/A"} ` +
+      `controllerFailed=${controller?.isFailed() ?? "N/A"} ` +
+      `finalTextForFallback="${(finalTextForFallback ?? "").slice(0, 80)}" ` +
+      `lastAnswer="${(controller?.getLastAnswerContent() ?? "").slice(0, 80)}" ` +
+      `lastContent="${(controller?.getLastContent() ?? "").slice(0, 80)}"`,
+    );
     if (useCardMode && currentAICard && !cardFinalized) {
       try {
         if (currentAICard.state === AICardStatus.FINISHED) {
-          log?.debug?.(
-            `[DingTalk] Skipping AI Card finalization because card is already FINISHED`,
+          log?.info?.(
+            `[DingTalk][Finalize] Skipping — card already FINISHED`,
           );
           return;
         }
 
         if (currentAICard.state === AICardStatus.FAILED || controller!.isFailed()) {
           const fallbackText = finalTextForFallback
+            || controller!.getLastAnswerContent()
             || controller!.getLastContent()
             || currentAICard.lastStreamedContent;
           if (fallbackText) {
@@ -1732,10 +1720,15 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         await controller!.flush();
         await controller!.waitForInFlight();
         controller!.stop();
-        const fallbackText = controller!.getLastContent()
-          || currentAICard.lastStreamedContent
+        const finalText = controller!.getLastAnswerContent()
+          || finalTextForFallback
           || "✅ Done";
-        await finishAICard(currentAICard, fallbackText, log);
+        log?.info?.(
+          `[DingTalk][Finalize] Calling finishAICard — finalTextLen=${finalText.length} ` +
+          `source=${controller!.getLastAnswerContent() ? "lastAnswerContent" : finalTextForFallback ? "finalTextForFallback" : "fallbackDone"} ` +
+          `preview="${finalText.slice(0, 120)}"`,
+        );
+        await finishAICard(currentAICard, finalText, log);
       } catch (err: any) {
         log?.debug?.(`[DingTalk] AI Card finalization failed: ${err.message}`);
         if (err?.response?.data !== undefined) {
@@ -1756,6 +1749,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     if (progressHeartbeatTimer) {
       clearInterval(progressHeartbeatTimer);
     }
+    await dynamicReactionUpdatePromise.catch(() => undefined);
     releaseSessionLock();
     if (ackReactionAttached) {
       void (async () => {
@@ -1769,7 +1763,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           {
             msgId: data.msgId,
             conversationId: groupId,
-            reactionName: resolvedAckReaction,
+            reactionName: currentAckReaction,
           },
           log,
         );

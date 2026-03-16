@@ -1,6 +1,6 @@
 {
-  "name": "@mjand66/openclaw-dingtalk",
-  "version": "3.2.1",
+  "name": "@soimy/dingtalk",
+  "version": "3.2.0",
   "description": "DingTalk (钉钉) channel plugin for OpenClaw",
   "keywords": [
     "bot",
@@ -11,12 +11,12 @@
     "stream",
     "钉钉"
   ],
-  "homepage": "https://github.com/MyQiongbao/openclaw-channel-dingtalk",
+  "homepage": "https://github.com/soimy/openclaw-channel-dingtalk",
   "license": "MIT",
-  "author": "mjand66",
+  "author": "YM Shen <soimy@163.com> (http://github.com/soimy)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MyQiongbao/openclaw-channel-dingtalk.git"
+    "url": "git+https://github.com/soimy/openclaw-channel-dingtalk.git"
   },
   "files": [
     "index.ts",
@@ -82,7 +82,7 @@
       ]
     },
     "install": {
-      "npmSpec": "@mjand66/openclaw-dingtalk",
+      "npmSpec": "@soimy/dingtalk",
       "localPath": ".",
       "defaultChoice": "npm"
     }

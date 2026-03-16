@@ -175,6 +175,74 @@ type ReplyChunkInfo = {
   kind?: string;
 };
 
+type RuntimeToolStartEvent = {
+  stream?: string;
+  data?: {
+    phase?: string;
+    name?: string;
+    args?: unknown;
+  };
+};
+
+const TOOL_REACTION_SILENCE_MS = 55_000;
+const TOOL_REACTION_HEARTBEAT_INTERVAL_MS = 60_000;
+const TOOL_HEARTBEAT_REACTION = "⏳";
+
+function readToolArgString(args: unknown, keys: string[]): string | undefined {
+  if (!args || typeof args !== "object") {
+    return undefined;
+  }
+  const record = args as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function resolveToolProgressReaction(toolName: unknown, args: unknown): string {
+  const normalizedToolName = typeof toolName === "string" ? toolName.trim().toLowerCase() : "";
+  switch (normalizedToolName) {
+    case "bash":
+    case "exec":
+    case "process": {
+      const command = readToolArgString(args, ["command", "cmd"]);
+      if (!command) {
+        return "🛠️";
+      }
+      if (/\bbrew\s+install\s+/i.test(command) || /\b(?:pnpm|npm|yarn)\s+(?:add|install)\s+/i.test(command)) {
+        return "📦";
+      }
+      if (/\bwhich\s+/i.test(command)) {
+        return "🔍";
+      }
+      return "🛠️";
+    }
+    case "read":
+    case "view":
+      return "📂";
+    case "write":
+    case "edit":
+    case "patch":
+      return "✍️";
+    case "web_search":
+    case "search":
+    case "browser.search":
+    case "browser_search":
+      return "🌐";
+    case "fetch":
+    case "open":
+    case "open_url":
+    case "browser.open":
+    case "browser_open":
+      return "🔗";
+    default:
+      return "🛠️";
+  }
+}
+
 /**
  * Download DingTalk media file via runtime media service (sandbox-compatible).
  * Files are stored in the global media inbound directory.
@@ -1287,6 +1355,14 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
+  const shouldTrackDynamicAckReaction = ackReaction === "emoji" && shouldAttachAckReaction;
+  let dynamicReactionStartedAt = 0;
+  let lastDynamicReactionAt = 0;
+  let currentAckReaction = resolvedAckReaction;
+  let progressDisposed = false;
+  let progressHeartbeatInFlight = false;
+  let progressHeartbeatTimer: NodeJS.Timeout | undefined;
+  let dynamicReactionUpdatePromise: Promise<void> = Promise.resolve();
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     if (!ackReactionAttached && shouldAttachAckReaction) {
@@ -1299,7 +1375,107 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     let cardFinalized = false;
     let finalTextForFallback: string | undefined;
 
+    const updateDynamicAckReaction = async (nextReaction: string) => {
+      const normalizedReaction = typeof nextReaction === "string" ? nextReaction.trim() : "";
+      if (
+        !normalizedReaction
+        || progressDisposed
+        || !shouldTrackDynamicAckReaction
+        || !ackReactionAttached
+      ) {
+        return;
+      }
+      if (normalizedReaction === currentAckReaction) {
+        if (dynamicReactionStartedAt === 0) {
+          dynamicReactionStartedAt = Date.now();
+        }
+        lastDynamicReactionAt = Date.now();
+        return;
+      }
+      const previousReaction = currentAckReaction;
+      ackReactionAttached = false;
+      await recallNativeAckReactionWithRetry(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          reactionName: previousReaction,
+        },
+        log,
+      );
+      const attached = await attachNativeAckReaction(
+        dingtalkConfig,
+        {
+          msgId: data.msgId,
+          conversationId: groupId,
+          reactionName: normalizedReaction,
+        },
+        log,
+      );
+      if (!attached) {
+        return;
+      }
+      ackReactionAttached = true;
+      currentAckReaction = normalizedReaction;
+      ackReactionAttachedAt = Date.now();
+      if (dynamicReactionStartedAt === 0) {
+        dynamicReactionStartedAt = ackReactionAttachedAt;
+      }
+      lastDynamicReactionAt = ackReactionAttachedAt;
+    };
+
+    const queueDynamicAckReactionUpdate = (nextReaction: string) => {
+      dynamicReactionUpdatePromise = dynamicReactionUpdatePromise
+        .then(() => updateDynamicAckReaction(nextReaction))
+        .catch((err: any) => {
+          log?.warn?.(`[DingTalk] Dynamic ack reaction update failed: ${err.message}`);
+        });
+      return dynamicReactionUpdatePromise;
+    };
+
+    const maybeHandleAgentEvent = async (event: unknown) => {
+      const toolEvent = event as RuntimeToolStartEvent | undefined;
+      if (toolEvent?.stream !== "tool" || toolEvent?.data?.phase !== "start") {
+        return;
+      }
+      await queueDynamicAckReactionUpdate(
+        resolveToolProgressReaction(toolEvent.data?.name, toolEvent.data?.args),
+      );
+    };
+
+    const runtimeEvents = (rt as typeof rt & {
+      events?: {
+        onAgentEvent?: (listener: (event: unknown) => void) => (() => void);
+      };
+    }).events;
+    const unsubscribeAgentEvents = shouldTrackDynamicAckReaction && runtimeEvents?.onAgentEvent
+      ? runtimeEvents.onAgentEvent((event: unknown) => {
+          void maybeHandleAgentEvent(event).catch((err: any) => {
+            log?.warn?.(`[DingTalk] Dynamic ack reaction event handling failed: ${err.message}`);
+          });
+        })
+      : () => {};
+
     try {
+      progressHeartbeatTimer = setInterval(() => {
+        if (
+          progressDisposed
+          || progressHeartbeatInFlight
+          || !shouldTrackDynamicAckReaction
+          || dynamicReactionStartedAt === 0
+          || lastDynamicReactionAt === 0
+        ) {
+          return;
+        }
+        if (Date.now() - lastDynamicReactionAt < TOOL_REACTION_SILENCE_MS) {
+          return;
+        }
+        progressHeartbeatInFlight = true;
+        void queueDynamicAckReactionUpdate(TOOL_HEARTBEAT_REACTION).finally(() => {
+          progressHeartbeatInFlight = false;
+        });
+      }, TOOL_REACTION_HEARTBEAT_INTERVAL_MS);
+
       await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg,
@@ -1477,7 +1653,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
             : undefined,
         },
       });
+      unsubscribeAgentEvents();
     } catch (dispatchErr: any) {
+      unsubscribeAgentEvents();
       if (useCardMode && currentAICard && !isCardInTerminalState(currentAICard.state)) {
         controller!.stop();
         await controller!.waitForInFlight();
@@ -1567,6 +1745,11 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       }
     }
   } finally {
+    progressDisposed = true;
+    if (progressHeartbeatTimer) {
+      clearInterval(progressHeartbeatTimer);
+    }
+    await dynamicReactionUpdatePromise.catch(() => undefined);
     releaseSessionLock();
     if (ackReactionAttached) {
       void (async () => {
@@ -1580,7 +1763,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           {
             msgId: data.msgId,
             conversationId: groupId,
-            reactionName: resolvedAckReaction,
+            reactionName: currentAckReaction,
           },
           log,
         );

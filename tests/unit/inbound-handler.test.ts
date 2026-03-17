@@ -3099,6 +3099,278 @@ describe('inbound-handler', () => {
         }
     });
 
+    it('handleDingTalkMessage serializes dynamic ack reaction updates across multiple tool events', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        shared.extractMessageContentMock.mockReturnValueOnce({
+            text: '请先读配置再执行命令',
+            messageType: 'text',
+        });
+        try {
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ dispatcherOptions }) => {
+                    await runtime.emitAgentEvent({
+                        stream: 'tool',
+                        data: {
+                            phase: 'start',
+                            name: 'read',
+                            toolCallId: 'tool_serial_1',
+                        },
+                    });
+                    await runtime.emitAgentEvent({
+                        stream: 'tool',
+                        data: {
+                            phase: 'start',
+                            name: 'exec',
+                            args: { command: 'brew install jq' },
+                            toolCallId: 'tool_serial_2',
+                        },
+                    });
+                    await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_serial',
+                    msgtype: 'text',
+                    text: { content: '请先读配置再执行命令' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            const emotionCalls = mockedAxiosPost.mock.calls
+                .filter((call: any[]) => String(call[0]).includes('/emotion/'))
+                .map((call: any[]) => ({
+                    endpoint: String(call[0]),
+                    emotionName: call[1]?.emotionName,
+                }));
+            const initialEmotion = emotionCalls[0]?.emotionName;
+
+            expect(emotionCalls).toEqual([
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/reply', emotionName: initialEmotion },
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/recall', emotionName: initialEmotion },
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/reply', emotionName: '📂' },
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/recall', emotionName: '📂' },
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/reply', emotionName: '📦' },
+                { endpoint: 'https://api.dingtalk.com/v1.0/robot/emotion/recall', emotionName: '📦' },
+            ]);
+        } finally {
+            randomSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage logs debug and degrades cleanly when onAgentEvent is unavailable', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const log = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+        shared.extractMessageContentMock.mockReturnValueOnce({
+            text: '请读取配置',
+            messageType: 'text',
+        });
+        try {
+            const runtime = buildRuntime();
+            delete runtime.events;
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: log as any,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_no_events',
+                    msgtype: 'text',
+                    text: { content: '请读取配置' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(log.debug).toHaveBeenCalledWith(
+                '[DingTalk] onAgentEvent not available, dynamic reaction tracking disabled',
+            );
+            expect(mockedAxiosPost).toHaveBeenCalledTimes(2);
+            const firstEmotion = mockedAxiosPost.mock.calls[0]?.[1]?.emotionName;
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                1,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({ emotionName: firstEmotion }),
+                expect.any(Object),
+            );
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                2,
+                'https://api.dingtalk.com/v1.0/robot/emotion/recall',
+                expect.objectContaining({ emotionName: firstEmotion }),
+                expect.any(Object),
+            );
+        } finally {
+            randomSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage clears heartbeat timer and unsubscribes agent events on cleanup', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+        const unsubscribeSpy = vi.fn();
+        try {
+            const runtime = buildRuntime();
+            runtime.events.onAgentEvent = vi.fn(() => unsubscribeSpy);
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ dispatcherOptions }) => {
+                    await runtime.emitAgentEvent({
+                        stream: 'tool',
+                        data: {
+                            phase: 'start',
+                            name: 'read',
+                            toolCallId: 'tool_cleanup_1',
+                        },
+                    });
+                    await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_cleanup',
+                    msgtype: 'text',
+                    text: { content: '请读取配置' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(runtime.events.onAgentEvent).toHaveBeenCalledTimes(1);
+            expect(unsubscribeSpy).toHaveBeenCalledTimes(1);
+            expect(clearIntervalSpy).toHaveBeenCalled();
+        } finally {
+            clearIntervalSpy.mockRestore();
+            randomSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage caps dynamic reaction drain wait before releasing session lock', async () => {
+        vi.useFakeTimers();
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+        const releaseFn = vi.fn();
+        shared.acquireSessionLockMock.mockResolvedValueOnce(releaseFn);
+        const pendingDynamicReaction = new Promise(() => undefined);
+        mockedAxiosPost
+            .mockResolvedValueOnce({ data: { success: true } } as any)
+            .mockResolvedValueOnce({ data: { success: true } } as any)
+            .mockImplementationOnce(() => pendingDynamicReaction as any);
+        try {
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ dispatcherOptions }) => {
+                    await runtime.emitAgentEvent({
+                        stream: 'tool',
+                        data: {
+                            phase: 'start',
+                            name: 'read',
+                            toolCallId: 'tool_timeout_1',
+                        },
+                    });
+                    await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            const handlePromise = handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_timeout',
+                    msgtype: 'text',
+                    text: { content: '请读取配置' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+
+            await vi.advanceTimersByTimeAsync(499);
+            expect(releaseFn).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            await handlePromise;
+            expect(releaseFn).toHaveBeenCalledTimes(1);
+        } finally {
+            randomSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
     it('handleDingTalkMessage attaches native ack reaction in card mode', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);

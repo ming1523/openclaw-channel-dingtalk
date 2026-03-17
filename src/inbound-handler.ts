@@ -187,6 +187,7 @@ type RuntimeToolStartEvent = {
 const TOOL_REACTION_SILENCE_MS = 55_000;
 const TOOL_REACTION_HEARTBEAT_INTERVAL_MS = 60_000;
 const TOOL_HEARTBEAT_REACTION = "⏳";
+const DYNAMIC_REACTION_DRAIN_TIMEOUT_MS = 500;
 
 function readToolArgString(args: unknown, keys: string[]): string | undefined {
   if (!args || typeof args !== "object") {
@@ -1363,6 +1364,17 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   let progressHeartbeatInFlight = false;
   let progressHeartbeatTimer: NodeJS.Timeout | undefined;
   let dynamicReactionUpdatePromise: Promise<void> = Promise.resolve();
+  let dynamicReactionQueueWaited = false;
+  const awaitDynamicReactionQueue = async () => {
+    if (dynamicReactionQueueWaited) {
+      return;
+    }
+    dynamicReactionQueueWaited = true;
+    await Promise.race([
+      dynamicReactionUpdatePromise,
+      new Promise<void>((resolve) => setTimeout(resolve, DYNAMIC_REACTION_DRAIN_TIMEOUT_MS)),
+    ]).catch(() => undefined);
+  };
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     if (!ackReactionAttached && shouldAttachAckReaction) {
@@ -1432,7 +1444,6 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         });
       return dynamicReactionUpdatePromise;
     };
-
     const maybeHandleAgentEvent = async (event: unknown) => {
       const toolEvent = event as RuntimeToolStartEvent | undefined;
       if (toolEvent?.stream !== "tool" || toolEvent?.data?.phase !== "start") {
@@ -1448,6 +1459,9 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         onAgentEvent?: (listener: (event: unknown) => void) => (() => void);
       };
     }).events;
+    if (shouldTrackDynamicAckReaction && !runtimeEvents?.onAgentEvent) {
+      log?.debug?.("[DingTalk] onAgentEvent not available, dynamic reaction tracking disabled");
+    }
     const unsubscribeAgentEvents = shouldTrackDynamicAckReaction && runtimeEvents?.onAgentEvent
       ? runtimeEvents.onAgentEvent((event: unknown) => {
           void maybeHandleAgentEvent(event).catch((err: any) => {
@@ -1656,8 +1670,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         },
       });
       unsubscribeAgentEvents();
+      await awaitDynamicReactionQueue();
     } catch (dispatchErr: any) {
       unsubscribeAgentEvents();
+      await awaitDynamicReactionQueue();
       if (useCardMode && currentAICard && !isCardInTerminalState(currentAICard.state)) {
         controller!.stop();
         await controller!.waitForInFlight();
@@ -1751,7 +1767,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     if (progressHeartbeatTimer) {
       clearInterval(progressHeartbeatTimer);
     }
-    await dynamicReactionUpdatePromise.catch(() => undefined);
+    await awaitDynamicReactionQueue();
     releaseSessionLock();
     if (ackReactionAttached) {
       void (async () => {

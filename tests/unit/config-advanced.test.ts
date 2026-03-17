@@ -164,41 +164,41 @@ describe('config advanced', () => {
             cfg: {
                 channels: {
                     dingtalk: {
-                        ackReaction: 'channel',
+                        ackReaction: 'emoji',
                         accounts: {
                             main: { ackReaction: '' },
                         },
                     },
                 },
-                messages: { ackReaction: 'message' },
+                messages: { ackReaction: 'kaomoji' },
                 agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
             } as any,
             accountId: 'main',
             agentId: 'main',
-        })).toBe('');
+        })).toBe('off');
 
         expect(resolveAckReactionSetting({
             cfg: {
                 channels: {
                     dingtalk: {
-                        ackReaction: 'channel',
+                        ackReaction: 'emoji',
                     },
                 },
-                messages: { ackReaction: 'message' },
+                messages: { ackReaction: 'kaomoji' },
                 agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
             } as any,
             accountId: 'main',
             agentId: 'main',
-        })).toBe('channel');
+        })).toBe('emoji');
 
         expect(resolveAckReactionSetting({
             cfg: {
-                messages: { ackReaction: 'message' },
+                messages: { ackReaction: 'kaomoji' },
                 agents: { list: [{ id: 'main', identity: { emoji: '👀' } }] },
             } as any,
             accountId: 'main',
             agentId: 'main',
-        })).toBe('message');
+        })).toBe('kaomoji');
 
         expect(resolveAckReactionSetting({
             cfg: {
@@ -206,13 +206,25 @@ describe('config advanced', () => {
             } as any,
             accountId: 'main',
             agentId: 'main',
-        })).toBe('👀');
+        })).toBe('emoji');
+
+        expect(resolveAckReactionSetting({
+            cfg: {
+                channels: {
+                    dingtalk: {
+                        ackReaction: 'invalid',
+                    },
+                },
+            } as any,
+            accountId: 'main',
+            agentId: 'main',
+        })).toBeUndefined();
 
         expect(resolveAckReactionSetting({
             cfg: {} as any,
             accountId: 'main',
             agentId: 'main',
-        })).toBe('👀');
+        })).toBe('emoji');
     });
 
     it('normalizes legacy learning keys in single-account config', () => {

@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import type { DingTalkConfig } from "./types";
+import type { AckReactionMode, DingTalkConfig } from "./types";
 
 const WINDOWS_ROOT_DIRECTORIES = new Set([
   "Users",
@@ -169,11 +169,35 @@ function resolveAgentIdentityEmoji(cfg: OpenClawConfig, agentId?: string | null)
   return emoji || undefined;
 }
 
+function normalizeAckReactionValue(value: unknown): AckReactionMode | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "off";
+  }
+  const normalized = trimmed.toLowerCase();
+  if (normalized === "off") {
+    return "off";
+  }
+  if (normalized === "emoji") {
+    return "emoji";
+  }
+  if (normalized === "kaomoji") {
+    return "kaomoji";
+  }
+  if (trimmed === "🤔思考中") {
+    return "emoji";
+  }
+  return undefined;
+}
+
 export function resolveAckReactionSetting(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
   agentId?: string | null;
-}): string | undefined {
+}): AckReactionMode | undefined {
   const dingtalk = (params.cfg?.channels as any)?.dingtalk;
   const accountId = String(params.accountId || "").trim();
   const accountConfig =
@@ -182,18 +206,18 @@ export function resolveAckReactionSetting(params: {
       : undefined;
 
   if (hasOwn(accountConfig, "ackReaction")) {
-    return typeof accountConfig.ackReaction === "string" ? accountConfig.ackReaction.trim() : "";
+    return normalizeAckReactionValue(accountConfig.ackReaction);
   }
   if (hasOwn(dingtalk, "ackReaction")) {
-    return typeof dingtalk.ackReaction === "string" ? dingtalk.ackReaction.trim() : "";
+    return normalizeAckReactionValue(dingtalk.ackReaction);
   }
 
   const messages = (params.cfg as any)?.messages;
   if (hasOwn(messages, "ackReaction")) {
-    return typeof messages.ackReaction === "string" ? messages.ackReaction.trim() : "";
+    return normalizeAckReactionValue(messages.ackReaction);
   }
 
-  return resolveAgentIdentityEmoji(params.cfg, params.agentId) || "👀";
+  return "emoji";
 }
 
 /**

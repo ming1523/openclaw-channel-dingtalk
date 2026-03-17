@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { DEFAULT_JOURNAL_TTL_DAYS } from "./quote-journal";
 
+const AckReactionSchema = z.enum(["off", "emoji", "kaomoji"]);
+
 const DingTalkAccountConfigShape = {
   /** Account name (optional display name) */
   name: z.string().optional(),
@@ -34,8 +36,8 @@ const DingTalkAccountConfigShape = {
 
   mediaUrlAllowlist: z.array(z.string()).optional(),
 
-  /** Official OpenClaw ackReaction entry for processing feedback; empty string disables it */
-  ackReaction: z.string().optional(),
+  /** Native ack reaction mode: off, emoji, or kaomoji */
+  ackReaction: AckReactionSchema.optional(),
 
   journalTTLDays: z.number().int().min(1).optional().default(DEFAULT_JOURNAL_TTL_DAYS),
   /** Enable debug logging */

@@ -1332,8 +1332,13 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           accountId,
           agentId: route.agentId,
         });
+  const normalizedAckReaction = ackReaction === "off" ? "" : ackReaction;
   const resolvedAckReaction =
-    ackReaction === "emoji" ? classifyAckReactionEmoji(content.text).emoji : ackReaction;
+    normalizedAckReaction === "kaomoji"
+      ? classifyAckReactionEmoji(content.text).emoji
+      : normalizedAckReaction === "emoji"
+        ? "🤔思考中"
+        : normalizedAckReaction;
   const shouldAttachAckReaction = Boolean(resolvedAckReaction);
   let ackReactionAttached = false;
   let ackReactionAttachedAt = 0;
@@ -1350,13 +1355,18 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
     if (ackReactionAttached) {
       ackReactionAttachedAt = Date.now();
+      log?.debug?.(
+        `[DingTalk] Initial ack reaction attached mode=${normalizedAckReaction || "off"} reaction=${resolvedAckReaction}`,
+      );
     }
   }
 
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
-  const shouldTrackDynamicAckReaction = ackReaction === "emoji" && shouldAttachAckReaction;
+  const shouldTrackDynamicAckReaction =
+    (normalizedAckReaction === "emoji" || normalizedAckReaction === "kaomoji")
+    && shouldAttachAckReaction;
   let dynamicReactionStartedAt = 0;
   let lastDynamicReactionAt = 0;
   let currentAckReaction = resolvedAckReaction;
@@ -1395,6 +1405,12 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         || !shouldTrackDynamicAckReaction
         || !ackReactionAttached
       ) {
+        if (shouldTrackDynamicAckReaction) {
+          log?.debug?.(
+            `[DingTalk] Dynamic ack reaction update skipped reaction=${normalizedReaction || "-"} ` +
+            `progressDisposed=${progressDisposed} ackReactionAttached=${ackReactionAttached}`,
+          );
+        }
         return;
       }
       if (normalizedReaction === currentAckReaction) {
@@ -1425,8 +1441,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         log,
       );
       if (!attached) {
+        log?.debug?.(`[DingTalk] Dynamic ack reaction attach did not succeed for reaction=${normalizedReaction}`);
         return;
       }
+      log?.debug?.(`[DingTalk] Dynamic ack reaction switched to ${normalizedReaction}`);
       ackReactionAttached = true;
       currentAckReaction = normalizedReaction;
       ackReactionAttachedAt = Date.now();
@@ -1449,6 +1467,13 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       if (toolEvent?.stream !== "tool" || toolEvent?.data?.phase !== "start") {
         return;
       }
+      const toolCallId = typeof (toolEvent.data as { toolCallId?: unknown } | undefined)?.toolCallId === "string"
+        ? (toolEvent.data as { toolCallId?: string }).toolCallId
+        : "-";
+      log?.debug?.(
+        `[DingTalk] Tool event received for dynamic ack reaction: name=${toolEvent.data?.name || "-"} ` +
+        `toolCallId=${toolCallId}`,
+      );
       await queueDynamicAckReactionUpdate(
         resolveToolProgressReaction(toolEvent.data?.name, toolEvent.data?.args),
       );

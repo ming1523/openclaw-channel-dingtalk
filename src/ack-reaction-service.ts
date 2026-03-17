@@ -8,6 +8,7 @@ import { formatDingTalkErrorPayloadLog, getProxyBypassOption } from "./utils";
 const DINGTALK_NATIVE_ACK_REACTION = "🤔思考中";
 const THINKING_EMOTION_ID = "2659900";
 const THINKING_EMOTION_BACKGROUND_ID = "im_bg_1";
+const THINKING_REACTION_ATTACH_DELAYS_MS = [0, 400, 1200] as const;
 const THINKING_REACTION_RECALL_DELAYS_MS = [0, 1500, 5000] as const;
 
 type AckReactionLogger = {
@@ -22,6 +23,10 @@ type AckReactionTarget = {
   robotCode?: string;
   reactionName?: string;
 };
+
+function formatAckReactionTarget(data: AckReactionTarget): string {
+  return `msgId=${data.msgId || "-"} conversationId=${data.conversationId || "-"} reactionName=${data.reactionName || DINGTALK_NATIVE_ACK_REACTION}`;
+}
 
 function resolveAckReactionPayload(config: DingTalkConfig, data: AckReactionTarget): {
   robotCode: string;
@@ -44,10 +49,10 @@ async function callEmotionApi(
   errorLogPrefix: string,
   errorPayloadKey: "inbound.ackReactionAttach" | "inbound.ackReactionRecall",
   log?: AckReactionLogger,
-): Promise<boolean> {
+): Promise<{ ok: boolean; error?: any }> {
   const payload = resolveAckReactionPayload(config, data);
   if (!payload) {
-    return false;
+    return { ok: false };
   }
 
   try {
@@ -77,14 +82,26 @@ async function callEmotionApi(
       },
     );
     log?.info?.(successLog);
-    return true;
+    return { ok: true };
   } catch (err: any) {
     log?.warn?.(`${errorLogPrefix}: ${err.message}`);
     if (err?.response?.data !== undefined) {
       log?.warn?.(formatDingTalkErrorPayloadLog(errorPayloadKey, err.response.data));
     }
-    return false;
+    return { ok: false, error: err };
   }
+}
+
+function isRetryableEmotionApiError(err: any): boolean {
+  const status = Number(err?.response?.status ?? 0);
+  const errorCode = String(err?.response?.data?.code || "").trim().toLowerCase();
+  if (!err?.response) {
+    return true;
+  }
+  if (status >= 500) {
+    return true;
+  }
+  return errorCode === "system.err";
 }
 
 export async function attachNativeAckReaction(
@@ -92,15 +109,34 @@ export async function attachNativeAckReaction(
   data: AckReactionTarget,
   log?: AckReactionLogger,
 ): Promise<boolean> {
-  return callEmotionApi(
-    config,
-    data,
-    "reply",
-    "[DingTalk] Native ack reaction attach succeeded",
-    "[DingTalk] Native ack reaction attach failed",
-    "inbound.ackReactionAttach",
-    log,
-  );
+  for (let index = 0; index < THINKING_REACTION_ATTACH_DELAYS_MS.length; index += 1) {
+    const delayMs = THINKING_REACTION_ATTACH_DELAYS_MS[index];
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+    const attempt = index + 1;
+    const attemptLabel = `${attempt}/${THINKING_REACTION_ATTACH_DELAYS_MS.length}`;
+    const result = await callEmotionApi(
+      config,
+      data,
+      "reply",
+      `[DingTalk] Native ack reaction attach succeeded (${formatAckReactionTarget(data)} attempt=${attemptLabel})`,
+      `[DingTalk] Native ack reaction attach failed (${formatAckReactionTarget(data)} attempt=${attemptLabel})`,
+      "inbound.ackReactionAttach",
+      log,
+    );
+    if (result.ok) {
+      return true;
+    }
+    const shouldRetry = isRetryableEmotionApiError(result.error);
+    if (!shouldRetry || attempt === THINKING_REACTION_ATTACH_DELAYS_MS.length) {
+      break;
+    }
+    log?.debug?.(
+      `[DingTalk] Retrying native ack reaction attach (${formatAckReactionTarget(data)} nextAttempt=${attempt + 1}/${THINKING_REACTION_ATTACH_DELAYS_MS.length})`,
+    );
+  }
+  return false;
 }
 
 async function recallNativeAckReaction(
@@ -108,7 +144,7 @@ async function recallNativeAckReaction(
   data: AckReactionTarget,
   log?: AckReactionLogger,
 ): Promise<boolean> {
-  return callEmotionApi(
+  const result = await callEmotionApi(
     config,
     data,
     "recall",
@@ -117,6 +153,7 @@ async function recallNativeAckReaction(
     "inbound.ackReactionRecall",
     log,
   );
+  return result.ok;
 }
 
 export async function recallNativeAckReactionWithRetry(

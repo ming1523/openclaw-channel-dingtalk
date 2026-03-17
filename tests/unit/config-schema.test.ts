@@ -143,19 +143,19 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.feedbackLearningNoteTtlMs).toBe(120000);
     });
 
-    it('accepts ackReaction config without injecting a schema default', () => {
+    it('accepts enum ackReaction config without injecting a schema default', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',
             clientSecret: 'secret',
-            ackReaction: '✅',
-        }) as { ackReaction?: string };
+            ackReaction: 'kaomoji',
+        }) as { ackReaction?: 'off' | 'emoji' | 'kaomoji' };
 
-        expect(parsed.ackReaction).toBe('✅');
+        expect(parsed.ackReaction).toBe('kaomoji');
 
         const defaults = DingTalkConfigSchema.parse({
             clientId: 'id',
             clientSecret: 'secret',
-        }) as { ackReaction?: string };
+        }) as { ackReaction?: 'off' | 'emoji' | 'kaomoji' };
 
         expect(defaults.ackReaction).toBeUndefined();
     });

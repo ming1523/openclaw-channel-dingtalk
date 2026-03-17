@@ -3101,6 +3101,74 @@ describe('inbound-handler', () => {
         }
     });
 
+    it('handleDingTalkMessage captures lifecycle start runId without sessionKey before switching dynamic ack reaction', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ dispatcherOptions }) => {
+                    await runtime.emitAgentEvent({
+                        stream: 'lifecycle',
+                        runId: 'run_without_session',
+                        data: {
+                            phase: 'start',
+                            runId: 'run_without_session',
+                        },
+                    });
+                    await runtime.emitAgentEvent({
+                        stream: 'tool',
+                        runId: 'run_without_session',
+                        data: {
+                            phase: 'start',
+                            name: 'read',
+                            toolCallId: 'tool_without_session',
+                            runId: 'run_without_session',
+                        },
+                    });
+                    await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_missing_session_key',
+                    msgtype: 'text',
+                    text: { content: '请读取配置' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+                3,
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({ emotionName: '📂' }),
+                expect.any(Object),
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('handleDingTalkMessage switches native ack reaction in card mode with the same tool event flow', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);

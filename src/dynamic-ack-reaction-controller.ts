@@ -3,6 +3,7 @@ import type { DingTalkConfig } from "./types";
 
 type DynamicAckReactionLogger = {
   debug?: (msg: string) => void;
+  info?: (msg: string) => void;
   warn?: (msg: string) => void;
 };
 
@@ -146,12 +147,29 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
   let correlationUnavailableLogged = false;
   let disposed = false;
 
+  const describeEvent = (event: RuntimeAgentEvent | undefined): string => {
+    const stream = typeof event?.stream === "string" && event.stream.trim() ? event.stream.trim() : "-";
+    const phase = typeof event?.data?.phase === "string" && event.data.phase.trim() ? event.data.phase.trim() : "-";
+    const toolName = typeof event?.data?.name === "string" && event.data.name.trim() ? event.data.name.trim() : "-";
+    const toolCallId =
+      typeof event?.data?.toolCallId === "string" && event.data.toolCallId.trim() ? event.data.toolCallId.trim() : "-";
+    return `stream=${stream} phase=${phase} runId=${getEventRunId(event) || "-"} ` +
+      `sessionKey=${getEventSessionKey(event) || "-"} toolCallId=${toolCallId} toolName=${toolName}`;
+  };
+
   const updateDynamicAckReaction = async (nextReaction: string) => {
     const normalizedReaction = typeof nextReaction === "string" ? nextReaction.trim() : "";
     if (!normalizedReaction || !params.enabled || !ackReactionAttached) {
+      params.log?.info?.(
+        `[DingTalk] Dynamic ack reaction update skipped reaction=${normalizedReaction || "-"} ` +
+        `enabled=${params.enabled} ackReactionAttached=${ackReactionAttached}`,
+      );
       return;
     }
     if (normalizedReaction === currentAckReaction) {
+      params.log?.info?.(
+        `[DingTalk] Dynamic ack reaction update skipped because reaction is unchanged: ${normalizedReaction}`,
+      );
       if (dynamicReactionStartedAt === 0) {
         dynamicReactionStartedAt = Date.now();
       }
@@ -216,6 +234,9 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
   };
 
   const queueDynamicAckReactionUpdate = (nextReaction: string) => {
+    params.log?.info?.(
+      `[DingTalk] Queue dynamic ack reaction update ${currentAckReaction || "-"} -> ${nextReaction || "-"}`,
+    );
     dynamicReactionUpdatePromise = dynamicReactionUpdatePromise
       .then(() => updateDynamicAckReaction(nextReaction))
       .catch((err: any) => {
@@ -227,19 +248,42 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
   const isCorrelatedEvent = (event: RuntimeAgentEvent | undefined): boolean => {
     const eventRunId = getEventRunId(event);
     const eventSessionKey = getEventSessionKey(event);
+    const eventPhase =
+      typeof event?.data?.phase === "string" && event.data.phase.trim() ? event.data.phase.trim() : "";
+    const eventStream = typeof event?.stream === "string" && event.stream.trim() ? event.stream.trim() : "";
 
     if (activeRunId) {
-      return eventRunId === activeRunId;
+      const matched = eventRunId === activeRunId;
+      params.log?.info?.(
+        `[DingTalk] Dynamic reaction correlation by runId matched=${matched} activeRunId=${activeRunId} ` +
+        `eventRunId=${eventRunId || "-"} eventSessionKey=${eventSessionKey || "-"}`,
+      );
+      return matched;
     }
     if (eventSessionKey === params.sessionKey) {
       if (eventRunId) {
         activeRunId = eventRunId;
+        params.log?.info?.(
+          `[DingTalk] Dynamic reaction captured active runId=${activeRunId} from sessionKey=${params.sessionKey}`,
+        );
+      } else {
+        params.log?.info?.(
+          `[DingTalk] Dynamic reaction correlated by sessionKey=${params.sessionKey} without runId`,
+        );
       }
+      return true;
+    }
+    if (eventStream === "lifecycle" && eventPhase === "start" && eventRunId && !eventSessionKey) {
+      activeRunId = eventRunId;
+      params.log?.info?.(
+        `[DingTalk] Dynamic reaction optimistically captured active runId=${activeRunId} ` +
+        `without sessionKey for current dispatch`,
+      );
       return true;
     }
     if (!correlationUnavailableLogged && params.enabled) {
       correlationUnavailableLogged = true;
-      params.log?.debug?.(
+      params.log?.info?.(
         "[DingTalk] Dynamic reaction tracking ignored uncorrelated agent events; waiting for sessionKey/runId match",
       );
     }
@@ -251,6 +295,7 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
     if (!params.enabled) {
       return;
     }
+    params.log?.info?.(`[DingTalk] Dynamic reaction observed agent event ${describeEvent(agentEvent)}`);
     if (agentEvent?.stream === "lifecycle" && agentEvent.data?.phase === "start") {
       void isCorrelatedEvent(agentEvent);
       return;
@@ -259,6 +304,9 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
       return;
     }
     if (!isCorrelatedEvent(agentEvent)) {
+      params.log?.info?.(
+        `[DingTalk] Dynamic reaction ignored uncorrelated tool event ${describeEvent(agentEvent)}`,
+      );
       return;
     }
     const toolCallId = typeof agentEvent.data?.toolCallId === "string" ? agentEvent.data.toolCallId : "-";
@@ -294,6 +342,10 @@ export function createDynamicAckReactionController(params: DynamicAckReactionCon
       if (Date.now() - lastDynamicReactionAt < TOOL_REACTION_SILENCE_MS) {
         return;
       }
+      params.log?.info?.(
+        `[DingTalk] Dynamic ack reaction heartbeat triggered currentReaction=${currentAckReaction} ` +
+        `lastDynamicReactionAt=${lastDynamicReactionAt}`,
+      );
       progressHeartbeatInFlight = true;
       void queueDynamicAckReactionUpdate(TOOL_HEARTBEAT_REACTION).finally(() => {
         progressHeartbeatInFlight = false;

@@ -148,6 +148,43 @@ function buildRuntime() {
     return runtime;
 }
 
+function buildLifecycleStartEvent(runId = 'run_1', sessionKey = 's1') {
+    return {
+        stream: 'lifecycle',
+        runId,
+        sessionKey,
+        data: {
+            phase: 'start',
+            runId,
+            sessionKey,
+        },
+    };
+}
+
+function buildToolStartEvent(params: {
+    name: string;
+    toolCallId: string;
+    runId?: string;
+    sessionKey?: string;
+    args?: unknown;
+}) {
+    const runId = params.runId ?? 'run_1';
+    const sessionKey = params.sessionKey ?? 's1';
+    return {
+        stream: 'tool',
+        runId,
+        sessionKey,
+        data: {
+            phase: 'start',
+            name: params.name,
+            toolCallId: params.toolCallId,
+            args: params.args,
+            runId,
+            sessionKey,
+        },
+    };
+}
+
 describe('inbound-handler', () => {
     beforeEach(() => {
         fs.rmSync(path.join(path.dirname('/tmp/store.json'), 'dingtalk-state'), { recursive: true, force: true });
@@ -2938,14 +2975,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'web_search',
-                            toolCallId: 'tool_1',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'web_search', toolCallId: 'tool_1' }));
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
                 });
@@ -3007,14 +3038,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'web_search',
-                            toolCallId: 'tool_1',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'web_search', toolCallId: 'tool_1' }));
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
                 });
@@ -3092,14 +3117,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'read',
-                            toolCallId: 'tool_2',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'read', toolCallId: 'tool_2' }));
                     await dispatcherOptions.deliver({ text: 'tool output' }, { kind: 'tool' });
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
@@ -3166,14 +3185,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async () => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'read',
-                            toolCallId: 'tool_3',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'read', toolCallId: 'tool_3' }));
                     await vi.advanceTimersByTimeAsync(60_000);
                     return {};
                 });
@@ -3229,23 +3242,13 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'read',
-                            toolCallId: 'tool_serial_1',
-                        },
-                    });
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'exec',
-                            args: { command: 'brew install jq' },
-                            toolCallId: 'tool_serial_2',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'read', toolCallId: 'tool_serial_1' }));
+                    await runtime.emitAgentEvent(buildToolStartEvent({
+                        name: 'exec',
+                        args: { command: 'brew install jq' },
+                        toolCallId: 'tool_serial_2',
+                    }));
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
                 });
@@ -3295,6 +3298,69 @@ describe('inbound-handler', () => {
             ]);
         } finally {
             randomSpy.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it('handleDingTalkMessage ignores dynamic reaction events from other sessions', async () => {
+        vi.useFakeTimers();
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        try {
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+                .fn()
+                .mockImplementation(async ({ dispatcherOptions }) => {
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent('run_other', 's_other'));
+                    await runtime.emitAgentEvent(buildToolStartEvent({
+                        name: 'web_search',
+                        toolCallId: 'tool_other',
+                        runId: 'run_other',
+                        sessionKey: 's_other',
+                    }));
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent('run_1', 's1'));
+                    await runtime.emitAgentEvent(buildToolStartEvent({
+                        name: 'read',
+                        toolCallId: 'tool_current',
+                        runId: 'run_1',
+                        sessionKey: 's1',
+                    }));
+                    await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
+                    return {};
+                });
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+            await handleDingTalkMessage({
+                cfg: {},
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: undefined,
+                dingtalkConfig: {
+                    clientId: 'ding_client',
+                    clientSecret: 'secret',
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    ackReaction: 'emoji',
+                } as any,
+                data: {
+                    msgId: 'm5_tool_progress_isolation',
+                    msgtype: 'text',
+                    text: { content: '请读取配置' },
+                    conversationType: '1',
+                    conversationId: 'cid_ok',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+            await vi.advanceTimersByTimeAsync(1200);
+
+            const emotionReplies = mockedAxiosPost.mock.calls
+                .filter((call: any[]) => call[0] === 'https://api.dingtalk.com/v1.0/robot/emotion/reply')
+                .map((call: any[]) => call[1]?.emotionName);
+            expect(emotionReplies).toContain('📂');
+            expect(emotionReplies).not.toContain('🌐');
+        } finally {
             vi.useRealTimers();
         }
     });
@@ -3374,14 +3440,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'read',
-                            toolCallId: 'tool_cleanup_1',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'read', toolCallId: 'tool_cleanup_1' }));
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
                 });
@@ -3423,12 +3483,15 @@ describe('inbound-handler', () => {
         }
     });
 
-    it('handleDingTalkMessage caps dynamic reaction drain wait before releasing session lock', async () => {
+    it('handleDingTalkMessage waits for dynamic reaction drain before releasing session lock', async () => {
         vi.useFakeTimers();
         const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
         const releaseFn = vi.fn();
         shared.acquireSessionLockMock.mockResolvedValueOnce(releaseFn);
-        const pendingDynamicReaction = new Promise(() => undefined);
+        let resolveDynamicReaction: (() => void) | undefined;
+        const pendingDynamicReaction = new Promise<void>((resolve) => {
+            resolveDynamicReaction = resolve;
+        });
         mockedAxiosPost
             .mockResolvedValueOnce({ data: { success: true } } as any)
             .mockResolvedValueOnce({ data: { success: true } } as any)
@@ -3438,14 +3501,8 @@ describe('inbound-handler', () => {
             runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
                 .fn()
                 .mockImplementation(async ({ dispatcherOptions }) => {
-                    await runtime.emitAgentEvent({
-                        stream: 'tool',
-                        data: {
-                            phase: 'start',
-                            name: 'read',
-                            toolCallId: 'tool_timeout_1',
-                        },
-                    });
+                    await runtime.emitAgentEvent(buildLifecycleStartEvent());
+                    await runtime.emitAgentEvent(buildToolStartEvent({ name: 'read', toolCallId: 'tool_timeout_1' }));
                     await dispatcherOptions.deliver({ text: 'final output' }, { kind: 'final' });
                     return {};
                 });
@@ -3476,10 +3533,10 @@ describe('inbound-handler', () => {
                 },
             } as any);
 
-            await vi.advanceTimersByTimeAsync(499);
+            await vi.advanceTimersByTimeAsync(1000);
             expect(releaseFn).not.toHaveBeenCalled();
 
-            await vi.advanceTimersByTimeAsync(1);
+            resolveDynamicReaction?.();
             await handlePromise;
             expect(releaseFn).toHaveBeenCalledTimes(1);
         } finally {

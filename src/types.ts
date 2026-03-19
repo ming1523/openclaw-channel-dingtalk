@@ -306,6 +306,7 @@ export interface MessageContent {
   docSpaceId?: string;
   docFileId?: string;
   quoted?: QuotedInfo;
+  mentions?: string[];
 }
 
 /**

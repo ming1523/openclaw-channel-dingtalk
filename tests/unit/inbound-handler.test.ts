@@ -98,6 +98,8 @@ import {
     handleDingTalkMessage,
     resetProactivePermissionHintStateForTest,
 } from '../../src/inbound-handler';
+import { upsertConversationHistoryIndex } from '../../src/history/group-history-store';
+import { upsertInboundMessageContext } from '../../src/message-context-store';
 import { cacheInboundDownloadCode, clearQuotedMsgCacheForTest, getCachedDownloadCode } from '../../src/quoted-msg-cache';
 import { recordProactiveRiskObservation } from '../../src/proactive-risk-registry';
 
@@ -518,6 +520,89 @@ describe('inbound-handler', () => {
         expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
         expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('仅允许 owner 使用');
         expect(shared.sendMessageMock).not.toHaveBeenCalled();
+    });
+
+    it('handleDingTalkMessage blocks summary command for non-owner', async () => {
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/summary group 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open' } as any,
+            data: {
+                msgId: 'm_summary_deny',
+                msgtype: 'text',
+                text: { content: '/summary group 1d' },
+                conversationType: '2',
+                conversationId: 'cid_group_summary',
+                senderId: 'user_not_owner',
+                senderNick: '访客',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toContain('仅允许 owner 使用');
+    });
+
+    it('handleDingTalkMessage returns summary reply for owner', async () => {
+        const storePath = path.join(fs.mkdtempSync('/tmp/dt-summary-owner-'), 'store.json');
+
+        await upsertConversationHistoryIndex({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_group_summary',
+            chatType: 'group',
+            title: '研发群',
+        });
+        upsertInboundMessageContext({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_group_summary',
+            msgId: 'seed_1',
+            createdAt: Date.now() - 1000,
+            messageType: 'text',
+            text: '@小明 今天上线么',
+            senderId: 'user_a',
+            senderName: '张三',
+            mentions: ['小明'],
+            chatType: 'group',
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath
+            .mockReturnValueOnce(storePath)
+            .mockReturnValueOnce(storePath);
+        shared.getRuntimeMock.mockReturnValue(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: '/summary group 1d', messageType: 'text' });
+
+        await handleDingTalkMessage({
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open' } as any,
+            data: {
+                msgId: 'm_summary_run',
+                msgtype: 'text',
+                text: { content: '/summary group 1d' },
+                conversationType: '2',
+                conversationId: 'cid_group_summary',
+                senderId: 'owner-test-id',
+                senderNick: 'Owner',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(shared.sendBySessionMock.mock.calls[0]?.[2]).toBe('final output');
     });
 
     it('handleDingTalkMessage does not treat owner plain text as learn help', async () => {

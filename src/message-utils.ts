@@ -191,6 +191,19 @@ export function convertMarkdownTablesToPlainText(text: string): string {
   return output.join("\n");
 }
 
+function dedupeMentions(values: string[]): string[] | undefined {
+  const normalized = values.map((value) => value.trim()).filter(Boolean);
+  if (normalized.length === 0) {
+    return undefined;
+  }
+  return [...new Set(normalized)];
+}
+
+function extractMentionsFromText(text: string): string[] | undefined {
+  const matches = [...text.matchAll(/@([^\s@]+)/g)].map((match) => match[1] || "");
+  return dedupeMentions(matches);
+}
+
 export function extractMessageContent(data: DingTalkInboundMessage): MessageContent {
   const msgtype = data.msgtype || "text";
 
@@ -307,13 +320,20 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
   const quotedPrefix = quoted?.prefix || "";
 
   if (msgtype === "text") {
-    return { text: quotedPrefix + (data.text?.content?.trim() || ""), messageType: "text", quoted: quoted ?? undefined };
+    const text = data.text?.content?.trim() || "";
+    return {
+      text: quotedPrefix + text,
+      messageType: "text",
+      quoted: quoted ?? undefined,
+      mentions: extractMentionsFromText(text),
+    };
   }
 
   if (msgtype === "richText") {
     const richTextParts = data.content?.richText || [];
     let text = "";
     const pictureDownloadCodes: string[] = [];
+    const mentionNames: string[] = [];
     // Keep first image downloadCode while preserving readable text and @mention parts.
     for (const part of richTextParts) {
       if (part.text && (part.type === "text" || part.type === undefined)) {
@@ -321,6 +341,7 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       }
       if (part.type === "at" && part.atName) {
         text += `@${part.atName} `;
+        mentionNames.push(part.atName);
       }
       if (part.type === "picture" && part.downloadCode) {
         pictureDownloadCodes.push(part.downloadCode);
@@ -337,6 +358,7 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       mediaTypes: uniquePictureDownloadCodes.length > 0 ? uniquePictureDownloadCodes.map(() => "image") : undefined,
       messageType: "richText",
       quoted: quoted ?? undefined,
+      mentions: dedupeMentions(mentionNames),
     };
   }
 

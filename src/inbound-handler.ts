@@ -13,7 +13,20 @@ import {
 import { classifyAckReactionEmoji } from "./ack-reaction-classifier";
 import { resolveAckReactionSetting, resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
+import { upsertConversationHistoryIndex } from "./history/group-history-store";
 import { setCurrentLogger } from "./logger-context";
+import {
+  formatSummaryCommandHelp,
+  generateSummaryNarrative,
+  isSummaryCommandText,
+  parseSummaryCommand,
+  resolveSummaryMentionNames,
+} from "./commands/summary-command-service";
+import {
+  DEFAULT_MESSAGE_CONTEXT_TTL_DAYS,
+  upsertInboundMessageContext,
+  upsertOutboundMessageContext,
+} from "./message-context-store";
 import {
   formatLearnAppliedReply,
   formatLearnCommandHelp,
@@ -83,6 +96,13 @@ const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
 const MIN_THINKING_REACTION_VISIBLE_MS = 1200;
 const ATTACHMENT_TEXT_PREFIX = "[附件内容摘录]";
 const proactiveHintLastSentAt = new Map<string, number>();
+
+function ttlDaysToMs(ttlDays: number | undefined): number | undefined {
+  if (typeof ttlDays !== "number" || !Number.isFinite(ttlDays) || ttlDays <= 0) {
+    return undefined;
+  }
+  return ttlDays * 24 * 60 * 60 * 1000;
+}
 
 export function resetProactivePermissionHintStateForTest(): void {
   proactiveHintLastSentAt.clear();
@@ -434,10 +454,23 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   const storePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
     agentId: route.agentId,
   });
-
   const to = isDirect ? senderId : groupId;
+
+  try {
+    await upsertConversationHistoryIndex({
+      storePath: accountStorePath,
+      accountId,
+      conversationId: to,
+      chatType: isDirect ? "direct" : "group",
+      title: isDirect ? senderName : groupName,
+    });
+  } catch (err: unknown) {
+    log?.warn?.(`[DingTalk] Failed to update conversation history index: ${String(err)}`);
+  }
+
   const parsedLearnCommand = parseLearnCommand(extractedContent.text);
   const parsedSessionCommand = parseSessionCommand(extractedContent.text);
+  const parsedSummaryCommand = parseSummaryCommand(extractedContent.text);
   const isOwner = isLearningOwner({
     cfg,
     config: dingtalkConfig,
@@ -488,6 +521,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     await sendBySession(dingtalkConfig, sessionWebhook, formatLearnCommandHelp(), { log });
     return;
   }
+  if (parsedSummaryCommand.scope === "summary" && !isOwner) {
+    await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
+    return;
+  }
   if (
     (parsedLearnCommand.scope === "global"
       || parsedLearnCommand.scope === "session"
@@ -510,6 +547,34 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     return;
   }
   if (isOwner) {
+    if (isSummaryCommandText(extractedContent.text) && parsedSummaryCommand.scope === "unknown") {
+      await sendBySession(dingtalkConfig, sessionWebhook, formatSummaryCommandHelp(), { log });
+      return;
+    }
+    if (parsedSummaryCommand.scope === "summary") {
+      const conversationIds = parsedSummaryCommand.useCurrentConversation ? [to] : parsedSummaryCommand.conversationIds;
+      const mentionNames = resolveSummaryMentionNames(parsedSummaryCommand.mentionNames, senderName);
+      const summaryReply = await generateSummaryNarrative({
+        rt,
+        cfg,
+        accountId,
+        senderId,
+        senderName,
+        to,
+        routeSessionKey: route.sessionKey,
+        conversationLabel: isDirect ? `${senderName} (${senderId})` : `${groupName} - ${senderName}`,
+        chatType: isDirect ? "direct" : "group",
+        storePath: accountStorePath,
+        chatTypeFilter: parsedSummaryCommand.chatType,
+        conversationIds,
+        senderIds: parsedSummaryCommand.senderIds,
+        mentionNames,
+        sinceTs: parsedSummaryCommand.sinceTs,
+        windowLabel: parsedSummaryCommand.windowLabel,
+      });
+      await sendBySession(dingtalkConfig, sessionWebhook, summaryReply, { log });
+      return;
+    }
     if (parsedSessionCommand.scope === "session-alias-show") {
       await sendBySession(
         dingtalkConfig,
@@ -831,6 +896,19 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   });
   if (manualForcedReply) {
     await sendBySession(dingtalkConfig, sessionWebhook, manualForcedReply, { log });
+    upsertOutboundMessageContext({
+      storePath: accountStorePath,
+      accountId,
+      conversationId: to,
+      createdAt: Date.now(),
+      text: manualForcedReply,
+      messageType: "outbound",
+      senderId: data.chatbotUserId || "bot",
+      senderName: "OpenClaw",
+      chatType: isDirect ? "direct" : "group",
+      ttlMs: ttlDaysToMs(dingtalkConfig.journalTTLDays ?? DEFAULT_MESSAGE_CONTEXT_TTL_DAYS),
+      delivery: { kind: "session" },
+    });
     return;
   }
   // 3) Select response mode (card vs markdown).
@@ -909,6 +987,27 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     });
   } catch (err) {
     log?.warn?.(`[DingTalk] Quote journal append failed: ${String(err)}`);
+  }
+
+  try {
+    upsertInboundMessageContext({
+      storePath: accountStorePath,
+      accountId,
+      conversationId: to,
+      msgId: data.msgId,
+      createdAt: data.createAt,
+      messageType: content.messageType,
+      text: stripQuotedPrefixForJournal(content.text),
+      senderId,
+      senderName,
+      mentions: content.mentions,
+      chatType: isDirect ? "direct" : "group",
+      quotedMessageId: content.quoted?.msgId,
+      ttlMs: ttlDaysToMs(journalTTLDays),
+      ttlReferenceMs: data.createAt,
+    });
+  } catch (err) {
+    log?.warn?.(`[DingTalk] Message context inbound append failed: ${String(err)}`);
   }
 
   let mediaPath: string | undefined;

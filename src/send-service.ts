@@ -10,6 +10,7 @@ import { stripTargetPrefix } from "./config";
 import { getLogger } from "./logger-context";
 import { getVoiceDurationMs, uploadMedia as uploadMediaUtil } from "./media-utils";
 import { convertMarkdownTablesToPlainText, detectMarkdownAndExtractTitle } from "./message-utils";
+import { DEFAULT_MESSAGE_CONTEXT_TTL_DAYS, upsertOutboundMessageContext } from "./message-context-store";
 import { resolveOriginalPeerId } from "./peer-id-registry";
 import { appendOutboundToQuoteJournal, appendProactiveOutboundJournal } from "./quote-journal";
 import {
@@ -56,6 +57,76 @@ function extractOutboundMessageId(payload: unknown): string | undefined {
     tracking?.msgid ??
     tracking?.outTrackId;
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function firstTrimmedString(...candidates: unknown[]): string | undefined {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return undefined;
+}
+
+function inferConversationChatType(conversationId: string): "direct" | "group" {
+  return conversationId.startsWith("cid") ? "group" : "direct";
+}
+
+function extractOutboundDeliveryMetadata(payload: unknown): {
+  messageId?: string;
+  processQueryKey?: string;
+  outTrackId?: string;
+  cardInstanceId?: string;
+} {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+  const data = payload as Record<string, unknown>;
+  const tracking =
+    data.tracking && typeof data.tracking === "object"
+      ? (data.tracking as Record<string, unknown>)
+      : undefined;
+  return {
+    messageId: firstTrimmedString(data.messageId, data.msgid, tracking?.messageId, tracking?.msgid),
+    processQueryKey: firstTrimmedString(data.processQueryKey, tracking?.processQueryKey),
+    outTrackId: firstTrimmedString(data.outTrackId, tracking?.outTrackId),
+    cardInstanceId: firstTrimmedString(data.cardInstanceId, tracking?.cardInstanceId),
+  };
+}
+
+function persistOutboundMessageContext(params: {
+  storePath?: string;
+  accountId?: string;
+  conversationId: string;
+  text?: string;
+  messageType?: string;
+  createdAt?: number;
+  senderId?: string;
+  senderName?: string;
+  delivery: {
+    messageId?: string;
+    processQueryKey?: string;
+    outTrackId?: string;
+    cardInstanceId?: string;
+    kind?: "session" | "proactive-text" | "proactive-card" | "proactive-media";
+  };
+}): void {
+  if (!params.storePath || !params.accountId) {
+    return;
+  }
+  upsertOutboundMessageContext({
+    storePath: params.storePath,
+    accountId: params.accountId,
+    conversationId: params.conversationId,
+    createdAt: params.createdAt ?? Date.now(),
+    text: params.text,
+    messageType: params.messageType,
+    senderId: params.senderId,
+    senderName: params.senderName,
+    chatType: inferConversationChatType(params.conversationId),
+    ttlMs: DEFAULT_MESSAGE_CONTEXT_TTL_DAYS * 24 * 60 * 60 * 1000,
+    delivery: params.delivery,
+  });
 }
 
 function composeCardContentForAppend(previous: string | undefined, incoming: string): string {
@@ -349,7 +420,8 @@ export async function sendProactiveMedia(
       deleteProactiveRiskObservation(options.accountId, resolvedTarget);
     }
 
-    const messageId = extractOutboundMessageId(result.data);
+    const delivery = extractOutboundDeliveryMetadata(result.data);
+    const messageId = delivery.messageId || delivery.processQueryKey || delivery.outTrackId;
     if (options.storePath && options.accountId) {
       await appendProactiveOutboundJournal({
         storePath: options.storePath,
@@ -359,6 +431,17 @@ export async function sendProactiveMedia(
         text: `[media:${mediaType}] ${mediaPath}`,
         messageType: "outbound-proactive-media",
         log,
+      });
+      persistOutboundMessageContext({
+        storePath: options.storePath,
+        accountId: options.accountId,
+        conversationId: options.conversationId || resolvedTarget,
+        text: `[media:${mediaType}] ${mediaPath}`,
+        messageType: "outbound-proactive-media",
+        delivery: {
+          ...delivery,
+          kind: "proactive-media",
+        },
       });
     }
     return { ok: true, data: result.data, messageId };
@@ -541,6 +624,20 @@ export async function sendMessage(
           messageType: "outbound",
           log,
         });
+        const delivery = extractOutboundDeliveryMetadata(data);
+        persistOutboundMessageContext({
+          storePath: options.storePath,
+          accountId: options.accountId,
+          conversationId: options.conversationId || conversationId,
+          text,
+          messageType: "outbound",
+          senderId: "bot",
+          senderName: "OpenClaw",
+          delivery: {
+            ...delivery,
+            kind: "session",
+          },
+        });
       }
       return { ok: true, data, messageId };
     }
@@ -556,6 +653,20 @@ export async function sendMessage(
         text,
         messageType: "outbound-proactive",
         log,
+      });
+      const delivery = extractOutboundDeliveryMetadata(result);
+      persistOutboundMessageContext({
+        storePath: options.storePath,
+        accountId: options.accountId,
+        conversationId: options.conversationId || conversationId,
+        text,
+        messageType: "outbound-proactive",
+        senderId: "bot",
+        senderName: "OpenClaw",
+        delivery: {
+          ...delivery,
+          kind: isTrackingResult(result) ? "proactive-card" : "proactive-text",
+        },
       });
     }
     if (isTrackingResult(result)) {

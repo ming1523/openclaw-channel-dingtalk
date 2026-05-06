@@ -411,6 +411,17 @@ openclaw gateway restart
 
 owner 权限来自 OpenClaw 框架标准字段 `commands.ownerAllowFrom`，不复用 `allowFrom`。`dmPolicy / groupPolicy / allowFrom` 仍只负责普通消息访问控制。
 
+### 手动强命中规则说明
+
+`/learn global 当用户问“X”时，必须回答“Y”` 这类规则目前使用**规范化后的精确匹配**：
+
+- 会忽略首尾空白
+- 会统一大小写
+- 会忽略末尾中英文问号/句号/叹号等常见标点
+- 会清理前导控制字符和零宽字符
+
+但它**不是语义模糊匹配**。换句话说，只有问法在规范化后与 `X` 一致时，才会直接短路回复 `Y`。
+
 ## 安全策略
 
 ### 私聊策略 (dmPolicy)

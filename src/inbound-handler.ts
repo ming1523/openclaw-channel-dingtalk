@@ -17,7 +17,7 @@ import {
   formatOwnerStatusReply,
   formatWhoAmIReply,
   isLearningOwner,
-  parseLearningCommand,
+  parseLearnCommand,
 } from "./learning-command-service";
 import { extractMessageContent } from "./message-utils";
 import { registerPeerId } from "./peer-id-registry";
@@ -339,14 +339,14 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   });
 
   const to = isDirect ? senderId : groupId;
-  const parsedLearningCommand = parseLearningCommand(content.text);
+  const parsedLearnCommand = parseLearnCommand(content.text);
   const isOwner = isLearningOwner({
     cfg,
     config: dingtalkConfig,
     senderId,
     rawSenderId: data.senderId,
   });
-  if (isDirect && parsedLearningCommand.kind === "whoami") {
+  if (isDirect && parsedLearnCommand.scope === "whoami") {
     await sendBySession(
       dingtalkConfig,
       sessionWebhook,
@@ -360,7 +360,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
     return;
   }
-  if (isDirect && parsedLearningCommand.kind === "owner-status") {
+  if (isDirect && parsedLearnCommand.scope === "owner-status") {
     await sendBySession(
       dingtalkConfig,
       sessionWebhook,
@@ -373,7 +373,12 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
     return;
   }
-  if (parsedLearningCommand.kind === "learn" && !isOwner) {
+  if (
+    (parsedLearnCommand.scope === "global"
+      || parsedLearnCommand.scope === "session"
+      || parsedLearnCommand.scope === "list")
+    && !isOwner
+  ) {
     await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
     return;
   }

@@ -397,13 +397,13 @@ describe('inbound-handler', () => {
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,
-            dingtalkConfig: { groupPolicy: 'open' } as any,
+            dingtalkConfig: { groupPolicy: 'open', allowFrom: ['owner-test-id'] } as any,
             data: {
                 msgId: 'm2_owner_deny',
                 msgtype: 'text',
                 text: { content: '/learn global test' },
-                conversationType: '2',
-                conversationId: 'cid_group_owner_gate',
+                conversationType: '1',
+                conversationId: 'cid_dm_owner',
                 senderId: 'user_not_owner',
                 chatbotUserId: 'bot_1',
                 sessionWebhook: 'https://session.webhook',
@@ -420,7 +420,7 @@ describe('inbound-handler', () => {
         shared.extractMessageContentMock.mockReturnValueOnce({ text: '/learn global test', messageType: 'text' });
 
         await handleDingTalkMessage({
-            cfg: {},
+            cfg: { commands: { ownerAllowFrom: ['dingtalk:owner-test-id'] } },
             accountId: 'main',
             sessionWebhook: 'https://session.webhook',
             log: undefined,

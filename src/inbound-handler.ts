@@ -13,6 +13,9 @@ import { resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
+  formatLearnAppliedReply,
+  formatLearnCommandHelp,
+  formatLearnListReply,
   formatOwnerOnlyDeniedReply,
   formatOwnerStatusReply,
   formatWhoAmIReply,
@@ -32,6 +35,12 @@ import { AICardStatus } from "./types";
 import { acquireSessionLock } from "./session-lock";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
 import { downloadGroupFile, getUnionIdByStaffId, resolveQuotedFile } from "./quoted-file-service";
+import {
+  applyManualGlobalLearningRule,
+  applyManualSessionLearningNote,
+  resolveManualForcedReply,
+} from "./feedback-learning-service";
+import { listLearnedRules } from "./feedback-learning-store";
 import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
@@ -382,7 +391,63 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     await sendBySession(dingtalkConfig, sessionWebhook, formatOwnerOnlyDeniedReply(), { log });
     return;
   }
-
+  if (isDirect && isOwner) {
+    if (parsedLearnCommand.scope === "global" && parsedLearnCommand.instruction) {
+      const applied = applyManualGlobalLearningRule({
+        storePath: accountStorePath,
+        accountId,
+        instruction: parsedLearnCommand.instruction,
+      });
+      await sendBySession(
+        dingtalkConfig,
+        sessionWebhook,
+        formatLearnAppliedReply({
+          scope: "global",
+          instruction: parsedLearnCommand.instruction,
+          ruleId: applied?.ruleId,
+        }),
+        { log },
+      );
+      return;
+    }
+    if (parsedLearnCommand.scope === "session" && parsedLearnCommand.instruction) {
+      applyManualSessionLearningNote({
+        storePath,
+        accountId,
+        targetId: data.conversationId,
+        instruction: parsedLearnCommand.instruction,
+      });
+      await sendBySession(
+        dingtalkConfig,
+        sessionWebhook,
+        formatLearnAppliedReply({
+          scope: "session",
+          instruction: parsedLearnCommand.instruction,
+        }),
+        { log },
+      );
+      return;
+    }
+    if (parsedLearnCommand.scope === "list") {
+      const rules = listLearnedRules({ storePath: accountStorePath, accountId })
+        .filter((rule) => rule.enabled)
+        .slice(0, 10)
+        .map((rule) => `- ${rule.ruleId}: ${rule.instruction}`);
+      await sendBySession(dingtalkConfig, sessionWebhook, formatLearnListReply(rules), { log });
+      return;
+    }
+    await sendBySession(dingtalkConfig, sessionWebhook, formatLearnCommandHelp(), { log });
+    return;
+  }
+  const manualForcedReply = resolveManualForcedReply({
+    storePath: accountStorePath,
+    accountId,
+    content,
+  });
+  if (manualForcedReply) {
+    await sendBySession(dingtalkConfig, sessionWebhook, manualForcedReply, { log });
+    return;
+  }
   // 3) Select response mode (card vs markdown).
   // Card creation runs BEFORE media download so the user sees immediate visual
   // feedback while large files are still being downloaded.
